@@ -271,6 +271,26 @@ make_panel <- function(d, spec) {
   }
   stop("Unknown panel renderer: ",type)
 }
+freeze_layout_units <- function(grob) {
+  # Resolve text-dependent dimensions while the measuring device is active.
+  # Flexible panel dimensions retain their relative units.
+  resolve <- function(units, direction) {
+    if(!length(units))return(units)
+    converted<-lapply(seq_along(units),function(i){
+      u<-units[i]
+      if(any(grepl("null|npc",as.character(u))))u else if(direction=="width")grid::convertWidth(u,"inches") else grid::convertHeight(u,"inches")
+    })
+    do.call(grid::unit.c,converted)
+  }
+  if(inherits(grob,"gtable")) {
+    grob$grobs<-lapply(grob$grobs,freeze_layout_units)
+    grob$widths<-resolve(grob$widths,"width")
+    grob$heights<-resolve(grob$heights,"height")
+  } else if(inherits(grob,"gTree") && length(grob$children)) {
+    grob$children<-do.call(grid::gList,lapply(grob$children,freeze_layout_units))
+  }
+  grob
+}
 render_panel <- function(figure, panel, data_dir, output_dir, formats=c("pdf","png")) {
   key <- paste(figure,panel,sep="/"); spec <- panel_registry[[key]]
   if (is.null(spec)) stop("Unknown figure panel: ",key)
@@ -291,7 +311,8 @@ render_panel <- function(figure, panel, data_dir, output_dir, formats=c("pdf","p
   plot_grob <- tryCatch({
     grid::grid.newpage()
     set.seed(1)
-    if(inherits(plot,c("grob","gtable")))plot else if(inherits(plot,"patchwork"))patchwork::patchworkGrob(plot) else ggplot2::ggplotGrob(plot)
+    layout<-if(inherits(plot,c("grob","gtable")))plot else if(inherits(plot,"patchwork"))patchwork::patchworkGrob(plot) else ggplot2::ggplotGrob(plot)
+    freeze_layout_units(layout)
   },finally={grDevices::dev.off();unlink(layout_device)})
   for (format in formats) {
     filename <- paste0(prefix,".",format)

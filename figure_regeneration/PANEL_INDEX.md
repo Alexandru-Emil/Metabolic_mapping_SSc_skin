@@ -1,6 +1,6 @@
 # Panel-to-table and plotting-source index
 
-Run all numerical panels with `Rscript figure_regeneration/render_all.R DATA_DIR OUTPUT_DIR` from the repository root. Each named script reads only its matching deposited table and the shared label file. The registry explicitly fixes the column schema, row count and plot specification.
+Run all numerical panels with `Rscript figure_regeneration/render_all.R DATA_DIR OUTPUT_DIR` from the repository root. Each named script reads its matching deposited table and the shared label file. Panels 6D/E also read each other's table to coordinate their axes and legends. The registry explicitly fixes the column schema, row count and plot specification.
 
 Original plotting functions and expressions are retained in `common/original_plot_code.R`; adapters replace analysis-object bindings with deposited tables. Other adapters retain the original plotting components (e.g. dittoDimPlot, ggradar, ggsankey, distance-density and interaction plots). Embedded Prism plots are recreated from their exported numerical values. Manuscript page assembly and image pixels require the original assets.
 
