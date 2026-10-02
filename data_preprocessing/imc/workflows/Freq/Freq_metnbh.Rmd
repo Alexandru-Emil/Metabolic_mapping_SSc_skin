@@ -1,0 +1,906 @@
+---
+title: "Frequencies of clusters - box plots and radar charts"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE,results='hide'}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, eval=FALSE) 
+```
+
+# Load spe
+
+```{r load data, eval=TRUE}
+
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+
+library(tidyverse)
+library(imcRtools)
+library(SpatialExperiment)
+library(scuttle)
+library(CATALYST)
+library(dittoSeq)
+library(ggpubr)
+library(rstatix)
+library(ggstatsplot)
+library(ggradar)
+library(RColorBrewer)
+library(fmsb)
+
+source(file.path(here(),"config.R"))
+
+dir<- here()
+
+spe <- readRDS(file.path(dir,"Datasets/spe20250127122004.rds"))
+
+dir_r <- "data_preprocessing/common"
+source(file.path(dir_r, "output_dir_svg_plots_fx.R"))
+
+output_dir <- output_dir_svg_plots_fx(ts)
+
+```
+
+# Prepare spe for analysis
+```{r prep analysis, eval=TRUE}
+
+# define color vectors
+color_vectors <- list()
+pheno_clusters_new <- setNames(c("#C4281C","#C2DAB8","#E8BAC8","#80BBDB","#C470A0","#0D69AC","#F5CD30","#287F47",
+                                 "#A05F35","#D9856C","#6B327C","#008F9C","#C7D23C","#B7D7D5","#923978","#27462D",
+                                 "#FF9494","#938767","#FFF67B","#E1A4C2","#FC7B1B","#CD6298","#102ADC"), 
+                               as.character(unique(spe$pheno_clusters_new)))
+
+indication <- setNames(c("#4DBBD533", "#E64B35AA"),
+                       c(unique(colData(spe)$Disease)))
+
+patient_id <- setNames(c("#FFFF33", "#FFCC66",'#FF9933','#FF6633','#00FFFF','#FF0033','#79B5B5', '#C470A0',
+                         '#996633','#999933','#99CC33','#FF9494', '#33FF33','#336633', '#330066','#923978'),
+                       c(unique(colData(spe)$patient_id)))
+
+Neighbourhood_del_80_pheno_new <- setNames(c("#CC00CC", "#260EEC", "#FFCA28", "#004D40","#FF6633","#66FF66", 
+                                             "#EF9EA7", "#990000", "#CC0033","#4FC3F7"),
+                                           unique(spe$Neighbourhood_del_80_pheno_new))
+
+progressive_skin <- setNames(c("#6CC3F4", "#C03830", "#F6BF93"), unique(spe$Progression_skin))
+
+color_vectors$clusters <- pheno_clusters_new
+color_vectors$Disease <- indication
+color_vectors$patient_id <- patient_id
+color_vectors$neighbourhood_del_80_pheno_new <- Neighbourhood_del_80_pheno_new
+color_vectors$progressive_skin <- progressive_skin
+metadata(spe)$color_vectors <- color_vectors
+
+
+# define an spe of all cells except epithelial cells
+spe_not_Epith <- spe[,which(!spe$new_celllabels=="E-cad+")]
+
+# Store reusable boxplot components in a variable
+common_plot_components <- list(
+  geom_point(position = position_dodge2(width = 0.5, padding = 1.5)),
+  theme_minimal(),
+  theme(
+    axis.text.x = element_text(size = 14, face = "bold", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 14, face = "bold"),
+    legend.title = element_text(size = 14, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold"),
+    strip.text = element_text(size = 14, face = "bold")
+  )
+)
+
+```
+
+# Boxplots frequencies and densities - healthy and SSc {.tabset .tabset-pill}
+
+`r fig_dim <- c(6, 5)`
+
+```{r boxplot h_ssc, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+# Define the cell types to plot
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+frequency_var <- "CN_10_aggNbh_delaunay_80_new"
+spe_subset <- spe
+boxplot_plot_list <- list()
+
+for (i in celltypes) {
+  # Subset data for the current cell type
+  #spe_subset <- spe[, spe$new_celllabels == i]
+  #spe_subset[[frequency_var]] <- as.character(spe_subset[[frequency_var]])
+  
+  # Obtain cell frequencies
+  data <- dittoSeq::dittoFreqPlot(spe_subset, var = frequency_var, 
+                                  group.by = "Disease", 
+                                  sample.by = "Donor",
+                                  data.out = TRUE)$data
+
+  for (j in unique(spe_subset[[frequency_var]])){
+    data2 <- data %>% filter(label==j)
+    # Generate the boxplot frequencies
+    boxplot_plot_freq <- ggplot(data = data2, aes(x = Disease, y = percent, fill = Disease)) +
+      geom_boxplot(outlier.shape = NA) +
+      stat_compare_means(comparisons=list(as.character(unique(data2$Disease))),
+                         method="wilcox", 
+                         hide.ns = TRUE,
+                         label.y=max(data2$percent)+0.1)+
+      #facet_wrap(~label, nrow=2, scales = "free") +
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      get_common_boxplot_components_fx() +
+      scale_fill_manual(values = metadata(spe)$color_vectors$Disease) +
+      labs(x = "Cluster", y = "Frequency") +
+      ggtitle(paste0("Frequency of ",j, " in healthy and SSc"))
+    
+
+# calculate cell density 
+    coldata.density <- data.frame(colData(spe_subset)) %>% 
+      dplyr::select(Donor, img_area, all_of(frequency_var), Disease) %>% 
+      group_by(Donor, Disease, !!sym(frequency_var)) %>%
+      summarise(density = n()/mean(img_area))
+coldata.density2 <- coldata.density %>% filter(!!sym(frequency_var)==j)
+    
+    # Generate the boxplot
+    boxplot_plot_dens <- ggplot(data = coldata.density2, aes(x = Disease, y = density, fill = Disease)) +
+      geom_boxplot(outlier.shape = NA) +
+      stat_compare_means(comparisons=list(as.character(unique(coldata.density2$Disease))),
+                           method="wilcox", label.y=max(coldata.density2$density)*1.1)+
+#      facet_wrap(~pheno_clusters_new, nrow=2, scales = "free") +
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      get_common_boxplot_components_fx() +
+      scale_fill_manual(values = metadata(spe)$color_vectors$Disease) +
+      labs(x = "Cluster", y = "Density per mm2") +
+      ggtitle(paste0("Density of ",j, " in healthy and SSc"))
+    
+      # Store plots in respective lists
+  plot_name_freq <- paste0("freq_of_",j,"_from_",i,"_plot")
+  plot_name_dens <- paste0("dens_of_",j,"_from_",i,"_plot")
+  boxplot_plot_list[[plot_name_freq]] <- boxplot_plot_freq
+  boxplot_plot_list[[plot_name_dens]] <- boxplot_plot_dens
+  }
+}
+
+for (i in celltypes) {
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+  name_celltype_plot <- grep(paste0("_from_", i, "_plot"), names(boxplot_plot_list), value = TRUE, fixed=TRUE)
+boxplot_plot_list_celltype <- boxplot_plot_list[name_celltype_plot]
+
+name_clusters_for_celltype <- unique(gsub(".*of_(.*)_from_.*", "\\1", name_celltype_plot))
+
+  for (j in name_clusters_for_celltype) {
+ # Save the frequency plot as SVG
+    name_freq_plot_clusters <- grep(paste0("freq_of_", j, "_from_"), names(boxplot_plot_list_celltype), value = TRUE, fixed=TRUE)
+    freq_svg_filename <- file.path(output_dir, paste0(name_freq_plot_clusters, "_h_ssc.svg"))
+    ggsave(filename = freq_svg_filename, plot = boxplot_plot_list_celltype[[name_freq_plot_clusters]], device = "svg", width = 6, height = 5)
+    
+    name_dens_plot_clusters <- grep(paste0("dens_of_", j, "_from_"), names(boxplot_plot_list_celltype), value = TRUE, fixed=TRUE)
+    # Save the density plot as SVG
+    dens_svg_filename <- file.path(output_dir, paste0(name_dens_plot_clusters, "_h_ssc.svg"))
+    ggsave(filename = dens_svg_filename, plot = boxplot_plot_list_celltype[[name_dens_plot_clusters]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+# Embed and provide download link for frequency plot
+    cat(sprintf("\n\n### %s_frequency\n", j))
+    #print(boxplot_plot_freq)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', freq_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Frequency Plot as SVG</a>\n\n', freq_svg_filename))
+    
+    # Embed and provide download link for density plot
+    cat(sprintf("\n\n### %s_density\n", j))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', dens_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Density Plot as SVG</a>\n\n', dens_svg_filename))
+  }
+}
+
+# Return the lists of plots
+# list(
+#   box_plots = boxplot_plot_list
+# )
+
+```
+
+# Radarchart ggradar - healthy and SSc {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 8)`
+
+```{r radarchart h_ssc, eval=TRUE, results='asis', fig.dim=fig_dim}
+
+# Define the cell types for which to create the radar charts
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+#spe_subset <- NULL
+radar <- NULL
+radar_zscore <- NULL
+plot_radar_freq_list <- list()
+plot_radar_zscore_freq_list <- list()
+
+for (i in celltypes) {
+  # Subset data for the current cell type
+#  spe_subset <- spe[, spe$new_celllabels == i]
+  
+  # Obtain cell frequencies
+  data <- dittoSeq::dittoFreqPlot(spe_subset, var = frequency_var, 
+                                  group.by = "Disease", 
+                                  sample.by = "Donor",
+                                  data.out = TRUE)$data
+
+  # Prepare data for radar chart
+  radar <- data %>% group_by(Disease, label) %>%
+    summarize(p.label = median(percent, na.rm = TRUE)) %>% 
+    pivot_wider(names_from = label, values_from = p.label) %>%
+    column_to_rownames("Disease") %>%
+    rownames_to_column("group")
+  
+  # Create radar chart for frequencies
+  plot_radar_freq <- ggradar(
+    radar, 
+    #values.radar = seq(round(min(radar[, -1], na.rm = TRUE), 2),round(max(radar[, -1], na.rm = TRUE), 2),by = 0.1),
+    grid.min = min(radar[, -1], na.rm = TRUE), 
+    grid.mid = (max(radar[, -1], na.rm = TRUE)+min(radar[, -1], na.rm = TRUE))/2,
+    grid.max = max(radar[, -1], na.rm = TRUE),
+    label.gridline.min = FALSE,
+    label.gridline.mid = FALSE,
+    label.gridline.max = FALSE,
+    group.line.width = 1, 
+    group.point.size = 3,
+    group.colours = metadata(spe)$color_vectors$Disease,
+    fill = TRUE, fill.alpha = 0.5,
+    background.circle.colour = "white",
+    gridline.mid.colour = "grey",
+    legend.position = "bottom"
+  )
+  
+  # Z-score transformation for individual clusters
+  zscores <- data %>% group_by(label) %>% 
+    mutate(zscore = (percent - mean(percent, na.rm = TRUE)) / sd(percent, na.rm = TRUE))  
+  
+  radar_zscore <- zscores %>% group_by(Disease, label) %>%
+    summarize(p.label = median(zscore, na.rm = TRUE)) %>% 
+    pivot_wider(names_from = label, values_from = p.label) %>%
+    column_to_rownames("Disease") %>%
+    rownames_to_column("group")
+  
+  # Create radar chart for z-score frequencies
+  plot_radar_zscore_freq <- ggradar(
+    radar_zscore, 
+    #values.radar = seq(round(min(radar_zscore[, -1], na.rm = TRUE), 2), round(max(radar_zscore[, -1], na.rm = TRUE), 2), by = 0.1),
+    grid.min = min(radar_zscore[, -1], na.rm = TRUE), 
+    grid.mid = (max(radar_zscore[, -1], na.rm = TRUE)+min(radar_zscore[, -1], na.rm = TRUE))/2,
+    grid.max = max(radar_zscore[, -1], na.rm = TRUE),
+    label.gridline.min = FALSE,
+    label.gridline.mid = FALSE,
+    label.gridline.max = FALSE,
+    group.line.width = 1, 
+    group.point.size = 3,
+    group.colours = metadata(spe)$color_vectors$Disease,
+    fill = TRUE, fill.alpha = 0.5,
+    background.circle.colour = "white",
+    gridline.mid.colour = "grey",
+    legend.position = "bottom"
+  )
+  
+  # Store plots in respective lists
+  plot_radar_freq_list[[i]] <- plot_radar_freq
+  plot_radar_zscore_freq_list[[i]] <- plot_radar_zscore_freq
+}
+
+for (i in celltypes) {
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+  radar_svg_filename <- file.path(output_dir, paste0(i, "_radar_h_ssc.svg"))
+  ggsave(filename = radar_svg_filename, plot = plot_radar_freq_list[[i]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+    radar_zscore_svg_filename <- file.path(output_dir, paste0(i, "_radar_zsc_h_ssc.svg"))
+    ggsave(filename = radar_zscore_svg_filename, plot = plot_radar_zscore_freq_list[[i]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+# Embed and provide download link for radar plot
+    cat(sprintf("\n\n### %s_radar\n", i))
+    #print(boxplot_plot_freq)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', radar_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Radar Plot as SVG</a>\n\n', radar_svg_filename))
+    
+    # Embed and provide download link for z-scored radar plot
+    cat(sprintf("\n\n### %s_radar_zscore\n", i))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', radar_zscore_svg_filename))
+    cat(sprintf('<a href="%s" download>Download z-scored Radar Plot as SVG</a>\n\n', radar_zscore_svg_filename))
+  }
+
+# Return the lists of plots
+# list(
+#   freq_plots = plot_radar_freq_list,
+#   zscore_plots = plot_radar_zscore_freq_list
+# )
+
+```
+
+# Radarchart base r - healthy and SSc {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 12)`
+
+```{r radarchart2 h_ssc, fig.dim=fig_dim, results='asis', eval=FALSE}
+
+source(file.path(dir_r, "create_beautiful_radarchart_fx.R"))
+
+# Define the cell types for which to create the radar charts
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+spe_subset <- NULL
+
+for (i in celltypes){
+  # Subset data for the current cell type
+  spe_subset <- spe[,spe$new_celllabels == i]
+  spe_subset$pheno_clusters_new <- as.character(spe_subset$pheno_clusters_new)
+  
+# obtain cell frequencies, optionally can also use table functions without dittoSeq package, e.g.:
+# data <- as.data.frame(prop.table(table(spe.fib$Group, spe.fib$cell_clusters2)))
+data <- dittoSeq::dittoFreqPlot(spe_subset, var = "pheno_clusters_new", 
+                               group.by = "Disease", 
+                               sample.by = "Donor",
+                               data.out = TRUE)$data
+
+radar <- data %>% group_by(Disease, label) %>%
+  summarize(p.label=median(percent)) %>% pivot_wider(names_from = label, values_from = p.label) %>%
+  column_to_rownames("Disease")
+# reorder the element if needed
+#radar <- radar[,order(-as.numeric(radar["NH",]))]
+
+
+# the max and min values need to be set here.
+max <- rep(max(radar)+0.1, ncol(radar)) %>% `names<-`(colnames(radar))
+min <- rep(0, ncol(radar))
+radar <- rbind(t(data.frame(Max = max, Min = min)), radar)
+
+# Reduce plot margin using par()
+opar <- par()
+par(mar = rep(0.5,4))
+
+ cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+ 
+ # Base R radar chart saving as SVG
+  baser_radar_svg_filename <- file.path(output_dir, paste0(i, "_baser_radar_h_ssc.svg"))
+  svg(filename = baser_radar_svg_filename, width = fig_dim[1], height = fig_dim[2])
+
+create_beautiful_radarchart(
+  data = radar,
+  color = metadata(spe)$color_vectors$Disease,
+  title=paste0("Frequencies of ", i),
+  caxislabels = rep("", 5)
+); legend(
+  x = "bottom", legend = rownames(radar[-c(1,2),]), horiz = TRUE,
+  bty = "n", pch = 20 , col = metadata(spe)$color_vectors$Disease,
+  text.col = "black", cex = 1, pt.cex = 1.5, x.intersp = 1
+  )
+
+dev.off()
+# Restore the standard par() settings
+par(opar)
+
+# Embed and provide download link for the base R radar plot
+  cat(sprintf("\n\n### %s_baser_radar\n", i))
+  cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', baser_radar_svg_filename))
+  cat(sprintf('<a href="%s" download>Download base r Radar Plot as SVG</a>\n\n', baser_radar_svg_filename))
+
+## Z-score transformation for individual clusters
+zscores <- data %>%  group_by(label) %>% mutate(zscore = (percent - mean(percent, na.rm = T)) / sd(percent, na.rm = T))  
+radar <- zscores %>% group_by(Disease, label) %>%
+  summarize(p.label=median(zscore)) %>% pivot_wider(names_from = label, values_from = p.label) %>%
+  column_to_rownames("Disease")
+#radar <- radar[,order(-as.numeric(radar["NH",]))]
+
+max <- rep(max(radar)+0.2, ncol(radar)) %>% `names<-`(colnames(radar))
+min <- rep(min(radar)-0.2, ncol(radar))
+radar <- rbind(t(data.frame(Max = max, Min = min)), radar)
+
+# Reduce plot margin using par()
+opar <- par()
+par(mar = rep(0.5,4))
+
+# Base R radar chart for Z-scores
+  baser_radar_zscore_svg_filename <- file.path(output_dir, paste0(i, "_baser_radar_zsc_h_ssc.svg"))
+  svg(filename = baser_radar_zscore_svg_filename, width = fig_dim[1], height = fig_dim[2])
+
+# Create the radar charts
+ create_beautiful_radarchart(
+  data = radar,
+  color = metadata(spe)$color_vectors$Disease,
+  title=paste0("Z-score transformed frequencies of ", i),
+  caxislabels = rep("", 5)
+); legend(
+  x = "bottom", legend = rownames(radar[-c(1,2),]), horiz = TRUE,
+  bty = "n", pch = 20 , col = metadata(spe)$color_vectors$Disease,
+  text.col = "black", cex = 1.5, pt.cex = 1.5, x.intersp = 1
+  )
+ 
+dev.off()  # Close the SVG device to save the Z-score plot
+# Restore the standard par() settings
+par(opar)
+
+  # Embed and provide download link for the Z-score base R radar plot
+  cat(sprintf("\n\n### %s_baser_radar_zscore\n", i))
+  cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', baser_radar_zscore_svg_filename))
+  cat(sprintf('<a href="%s" download>Download Z-scored base r Radar Plot as SVG</a>\n\n', baser_radar_zscore_svg_filename))
+}
+  
+```
+
+# Boxplots ggstatsplot - healthy, SSc progressive, SSc stable {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 15)`
+
+```{r boxplot ggstatsplot h_pr_st, fig.dim=fig_dim, results='asis', eval=FALSE}
+
+# Define the cell types for which to create the frequency plots
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+#spe_subset <- NULL
+boxplot_list_ggstats <- list()
+
+for (i in celltypes) {
+  # Subset data for the current cell type
+  # spe_subset <- spe[, spe$new_celllabels == i]
+  # spe_subset$pheno_clusters_new <- as.character(spe_subset$pheno_clusters_new)
+  
+  # Obtain cell frequencies
+  data <- dittoSeq::dittoFreqPlot(spe_subset, var = frequency_var, 
+                                  group.by = "Progression_skin", 
+                                  sample.by = "Donor",
+                                  data.out = TRUE)$data
+  
+# Generate the boxplots for frequencies with ggbetweenstats
+ ggstats_boxplot_freq <- grouped_ggbetweenstats(data = data, x = Progression_skin, y = percent,
+                              grouping.var=label,
+                              ggplot.component = list(ggplot2::scale_color_manual(values=
+                              metadata(spe)$color_vectors$progressive_skin)),
+                              type = "nonparametric", 
+                              p.adjust.method = "none", 
+                              k = 4, 
+                              pairwise.display = "all",
+                              centrality.point.args = list(size = 0), 
+                              violin.args = list(width = 0)) + 
+      ylab('Frequency')+
+      ggtitle(paste0("Frequency of clusters for ", i))
+    
+
+# calculate cell density 
+    coldata.density <- data.frame(colData(spe_subset)) %>% 
+      dplyr::select(Donor, img_area, pheno_clusters_new, Progression_skin) %>% 
+      group_by(Donor, Progression_skin, pheno_clusters_new) %>%
+      summarise(density = n()/mean(img_area))
+
+    
+    # Generate the boxplots for densities with ggbetweenstats
+     ggstats_boxplot_dens <- grouped_ggbetweenstats(data = coldata.density, x = Progression_skin, y = density,
+                              grouping.var=pheno_clusters_new,
+                              ggplot.component = list(ggplot2::scale_color_manual(values=
+                                metadata(spe)$color_vectors$progressive_skin)),
+                              type = "nonparametric", 
+                              p.adjust.method = "none", 
+                              k = 4, 
+                              pairwise.display = "all",
+                              centrality.point.args = list(size = 0), 
+                              violin.args = list(width = 0))+ 
+      ylab('Density')+
+      ggtitle(paste0("Density of clusters for ", i))
+
+# Store plots in respective lists
+  plot_name_freq_ggstats <- paste0("freq_of_", i,"_plot")
+  plot_name_dens_ggstats <- paste0("dens_of_", i,"_plot")
+  boxplot_list_ggstats[[plot_name_freq_ggstats]] <- ggstats_boxplot_freq
+  boxplot_list_ggstats[[plot_name_dens_ggstats]] <- ggstats_boxplot_dens
+}
+
+for (i in celltypes) {
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+  
+  name_ggstplot_freq <- grep(paste0("freq_of_", i, "_plot"), names(boxplot_list_ggstats), value = TRUE, fixed=TRUE)
+  ggstplot_freq_svg_filename <- file.path(output_dir, paste0(name_ggstplot_freq, "_ggst_h_st_pr.svg"))
+  ggsave(filename = ggstplot_freq_svg_filename, plot = boxplot_list_ggstats[[name_ggstplot_freq]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+name_ggstplot_dens <- grep(paste0("dens_of_", i, "_plot"), names(boxplot_list_ggstats), value = TRUE, fixed=TRUE)
+  ggstplot_dens_svg_filename <- file.path(output_dir, paste0(name_ggstplot_dens, "_ggst_h_st_pr.svg"))
+  ggsave(filename = ggstplot_dens_svg_filename, plot = boxplot_list_ggstats[[name_ggstplot_dens]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+# Embed and provide download link for ggstatplot density plot
+    cat(sprintf("\n\n### %s_ggstatsplot_frequency\n", i))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', ggstplot_freq_svg_filename))
+    cat(sprintf('<a href="%s" download>Download ggstatsplot for Frequency Radar Plot as SVG</a>\n\n', ggstplot_freq_svg_filename))
+    
+    # Embed and provide download link for ggstatplot density plot
+    cat(sprintf("\n\n### %s_ggstatsplot_density\n", i))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', ggstplot_dens_svg_filename))
+    cat(sprintf('<a href="%s" download>Download ggstatsplot for Density as SVG</a>\n\n', ggstplot_dens_svg_filename))
+  }
+
+# Return the lists of plots
+# list(
+#   freq_box_plots_ggstats = boxplot_list_ggstats
+# )
+
+```
+
+# Boxplots ggplot - healthy, SSc progressive, SSc stable {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 8)`
+
+```{r boxplot ggplot h_pr_st, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+# Define the cell types for which to create the frequency and density plots
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+#spe_subset <- NULL
+boxplot_plot_list <- list()
+
+for (i in celltypes) {
+  # Subset data for the current cell type
+  #spe_subset <- spe[, spe$new_celllabels == i]
+  #spe_subset$pheno_clusters_new <- as.character(spe_subset$pheno_clusters_new)
+  
+  # Obtain cell frequencies
+  data <- dittoSeq::dittoFreqPlot(spe_subset, var = frequency_var, 
+                                  group.by = "Progression_skin", 
+                                  sample.by = "Donor",
+                                  data.out = TRUE)$data
+
+  for (j in unique(spe_subset[[frequency_var]])){
+    data2 <- data %>% filter(label==j)
+    dunn_res <- as.data.frame(data2) %>% rstatix::dunn_test (percent ~ Progression_skin, 
+                                                             p.adjust.method="none")%>%
+  mutate (method="Dunn")
+    
+    # Generate the boxplot
+    boxplot_plot_freq <- ggplot(data = data2, aes(x = Progression_skin, y = percent)) +
+      geom_boxplot(outlier.shape = NA, aes(fill = Progression_skin)) +
+      stat_pvalue_manual(dunn_res%>%
+                           mutate(y.position=c(max(data2$percent+0.1),
+                                               max(data2$percent+0.15),
+                                               max(data2$percent+0.1))),
+                         bracket.shorten = 0.05) +
+      stat_compare_means(method="kruskal", label.y=max(data2$percent +0.25))+
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      get_common_boxplot_components_fx() +
+      scale_fill_manual(values = metadata(spe)$color_vectors$progressive_skin) +
+      labs(x = "Cluster", y = "Frequency") +
+      ggtitle(paste0("Frequency of ",j, " in healthy and SSc"))
+    
+    # Calculate the densities
+    coldata.density <- data.frame(colData(spe_subset)) %>% 
+      dplyr::select(Donor, img_area, all_of(frequency_var), Progression_skin) %>% 
+      group_by(Donor, Progression_skin, !!sym(frequency_var)) %>%
+      summarise(density = n()/mean(img_area))
+    
+    coldata.density2 <- coldata.density %>% filter(!!sym(frequency_var)==j)
+    dunn_res2 <- as.data.frame(coldata.density2) %>% rstatix::dunn_test (density ~ Progression_skin, 
+                                                             p.adjust.method="none")%>%
+  mutate (method="Dunn")
+    
+    # Generate the boxplot
+    boxplot_plot_dens <- ggplot(data = coldata.density2, aes(x = Progression_skin, y = density)) +
+      geom_boxplot(outlier.shape = NA, aes(fill = Progression_skin)) +
+      stat_pvalue_manual(dunn_res2%>%
+                           mutate(y.position=c(max(coldata.density2$density*1.1),
+                                               max(coldata.density2$density*1.18),
+                                               max(coldata.density2$density*1.1))),
+                         bracket.shorten = 0.05) +
+      stat_compare_means(method="kruskal", label.y=max(coldata.density2$density*1.28))+
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      common_plot_components +
+      scale_fill_manual(values = metadata(spe)$color_vectors$progressive_skin) +
+      labs(x = "Cluster", y = "Density per mm2") +
+      ggtitle(paste0("Density of ",j, " in healthy and SSc"))
+    
+   
+  # Store plots in respective lists
+          # Store plots in respective lists
+  plot_name_freq <- paste0("freq_of_",j,"_from_",i,"_plot")
+  plot_name_dens <- paste0("dens_of_",j,"_from_",i,"_plot")
+  boxplot_plot_list[[plot_name_freq]] <- boxplot_plot_freq
+  boxplot_plot_list[[plot_name_dens]] <- boxplot_plot_dens
+  }
+}
+
+for (i in celltypes) {
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+  name_celltype_plot <- grep(paste0("_from_", i, "_plot"), names(boxplot_plot_list), value = TRUE, fixed=TRUE)
+boxplot_plot_list_celltype <- boxplot_plot_list[name_celltype_plot]
+
+name_clusters_for_celltype <- unique(gsub(".*of_(.*)_from_.*", "\\1", name_celltype_plot))
+
+  for (j in name_clusters_for_celltype) {
+ # Save the frequency plot as SVG
+    name_freq_plot_clusters <- grep(paste0("freq_of_", j, "_from_"), names(boxplot_plot_list_celltype), value = TRUE, fixed=TRUE)
+    freq_svg_filename <- file.path(output_dir, paste0(name_freq_plot_clusters, "_h_sscst_sscpr.svg"))
+    ggsave(filename = freq_svg_filename, plot = boxplot_plot_list_celltype[[name_freq_plot_clusters]], device = "svg", width = 6, height = 5)
+    
+    name_dens_plot_clusters <- grep(paste0("dens_of_", j, "_from_"), names(boxplot_plot_list_celltype), value = TRUE, fixed=TRUE)
+    # Save the density plot as SVG
+    dens_svg_filename <- file.path(output_dir, paste0(name_dens_plot_clusters, "_h_sscst_sscpr.svg"))
+    ggsave(filename = dens_svg_filename, plot = boxplot_plot_list_celltype[[name_dens_plot_clusters]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+# Embed and provide download link for frequency plot
+    cat(sprintf("\n\n### %s_frequency\n", j))
+    #print(boxplot_plot_freq)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', freq_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Frequency Plot as SVG</a>\n\n', freq_svg_filename))
+    
+    # Embed and provide download link for density plot
+    cat(sprintf("\n\n### %s_density\n", j))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', dens_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Density Plot as SVG</a>\n\n', dens_svg_filename))
+  }
+}
+
+# Return the lists of plots
+# list(
+#   box_plots = boxplot_plot_list
+# )
+```
+
+# Radarchart ggradar - healthy, SSc progressive, SSc stable {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 8)`
+
+```{r radarchart h_pr_st, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+# Define the cell types for which to create the radar charts
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+#spe_subset <- NULL
+radar <- NULL
+radar_zscore <- NULL
+plot_radar_freq_list <- list()
+plot_radar_zscore_freq_list <- list()
+
+for (i in celltypes) {
+  # Subset data for the current cell type
+  #spe_subset <- spe[, spe$new_celllabels == i]
+  #spe_subset$pheno_clusters_new <- as.character(spe_subset$pheno_clusters_new)
+  
+  # Obtain cell frequencies
+  data <- dittoSeq::dittoFreqPlot(spe_subset, var = frequency_var, 
+                                  group.by = "Progression_skin", 
+                                  sample.by = "Donor",
+                                  data.out = TRUE)$data
+  
+   # Prepare data for radar chart
+  radar <- data %>% group_by(Progression_skin, label) %>%
+    summarize(p.label = median(percent, na.rm = TRUE)) %>% 
+    pivot_wider(names_from = label, values_from = p.label) %>%
+    column_to_rownames("Progression_skin") %>%
+    rownames_to_column("group")
+  
+  # Create radar chart for frequencies
+  plot_radar_freq <- ggradar(
+    radar, 
+    #values.radar = seq(round(min(radar[, -1], na.rm = TRUE), 2),round(max(radar[, -1], na.rm = TRUE), 2),by = 0.1),
+    grid.min = min(radar[, -1], na.rm = TRUE), 
+    grid.mid = (max(radar[, -1], na.rm = TRUE)+min(radar[, -1], na.rm = TRUE))/2,
+    grid.max = max(radar[, -1], na.rm = TRUE),
+    label.gridline.min = FALSE,
+    label.gridline.mid = FALSE,
+    label.gridline.max = FALSE,
+    group.line.width = 1, 
+    group.point.size = 3,
+    group.colours = metadata(spe)$color_vectors$progressive_skin,
+    fill = TRUE, fill.alpha = 0.5,
+    background.circle.colour = "white",
+    gridline.mid.colour = "grey",
+    legend.position = "bottom"
+  )
+  
+  # Z-score transformation for individual clusters
+  zscores <- data %>% group_by(label) %>% 
+    mutate(zscore = (percent - mean(percent, na.rm = TRUE)) / sd(percent, na.rm = TRUE))  
+  
+  radar_zscore <- zscores %>% group_by(Progression_skin, label) %>%
+    summarize(p.label = median(zscore, na.rm = TRUE)) %>% 
+    pivot_wider(names_from = label, values_from = p.label) %>%
+    column_to_rownames("Progression_skin") %>%
+    rownames_to_column("group")
+  
+  # Create radar chart for z-score frequencies
+  plot_radar_zscore_freq <- ggradar(
+    radar_zscore, 
+    #values.radar = seq(round(min(radar_zscore[, -1], na.rm = TRUE), 2), round(max(radar_zscore[, -1], na.rm = TRUE), 2), by = 0.1),
+    grid.min = min(radar_zscore[, -1], na.rm = TRUE), 
+    grid.mid = (max(radar_zscore[, -1], na.rm = TRUE)+min(radar_zscore[, -1], na.rm = TRUE))/2,
+    grid.max = max(radar_zscore[, -1], na.rm = TRUE),
+    label.gridline.min = FALSE,
+    label.gridline.mid = FALSE,
+    label.gridline.max = FALSE,
+    group.line.width = 1, 
+    group.point.size = 3,
+    group.colours = metadata(spe)$color_vectors$progressive_skin,
+    fill = TRUE, fill.alpha = 0.5,
+    background.circle.colour = "white",
+    gridline.mid.colour = "grey",
+    legend.position = "bottom"
+  )
+  
+  plot_radar_freq_list[[i]] <- plot_radar_freq
+  plot_radar_zscore_freq_list[[i]] <- plot_radar_zscore_freq
+}
+
+for (i in celltypes) {
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+  radar_svg_filename <- file.path(output_dir, paste0(i, "_radar_h_sscst_sscpr.svg"))
+  ggsave(filename = radar_svg_filename, plot = plot_radar_freq_list[[i]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+    radar_zscore_svg_filename <- file.path(output_dir, paste0(i, "_radar_zsc_h_sscst_sscpr.svg"))
+    ggsave(filename = radar_zscore_svg_filename, plot = plot_radar_zscore_freq_list[[i]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    
+# Embed and provide download link for radar plot
+    cat(sprintf("\n\n### %s_radar\n", i))
+    #print(boxplot_plot_freq)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', radar_svg_filename))
+    cat(sprintf('<a href="%s" download>Download Radar Plot as SVG</a>\n\n', radar_svg_filename))
+    
+    # Embed and provide download link for z-scored radar plot
+    cat(sprintf("\n\n### %s_radar_zscore\n", i))
+   #print(boxplot_plot_dens)
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', radar_zscore_svg_filename))
+    cat(sprintf('<a href="%s" download>Download z-scored Radar Plot as SVG</a>\n\n', radar_zscore_svg_filename))
+  }
+
+# Return the lists of plots
+# list(
+#   freq_plots = plot_radar_freq_list,
+#   zscore_plots = plot_radar_zscore_freq_list
+# )
+
+```
+
+
+# Radarchart base r - healthy, SSc progressive, SSc stable {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 12)`
+
+```{r radarchart2 h_pr_st, eval=FALSE, fig.dim=fig_dim, results='asis'}
+
+# Define the cell types for which to create the radar charts
+celltypes <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+radarchart_freq_list <- list()
+radarchart_zscaled_feq_list <- list()
+spe_subset <- NULL
+
+
+for (i in celltypes){
+  radar <- NULL
+  # Subset data for the current cell type
+  spe_subset <- spe[,spe$new_celllabels == i]
+  spe_subset$pheno_clusters_new <- as.character(spe_subset$pheno_clusters_new)
+  
+# obtain cell frequencies, optionally can also use table functions without dittoSeq package, e.g.:
+# data <- as.data.frame(prop.table(table(spe.fib$Group, spe.fib$cell_clusters2)))
+data <- dittoSeq::dittoFreqPlot(spe_subset, var = "pheno_clusters_new", 
+                               group.by = "Progression_skin", 
+                               sample.by = "Donor",
+                               data.out = TRUE)$data
+
+radar <- data %>% group_by(Progression_skin, label) %>%
+  summarize(p.label=median(percent)) %>% pivot_wider(names_from = label, values_from = p.label) %>%
+  column_to_rownames("Progression_skin")
+# reorder the element if needed
+#radar <- radar[,order(-as.numeric(radar["NH",]))]
+
+
+# the max and min values need to be set here.
+max <- rep(max(radar)+0.1, ncol(radar)) %>% `names<-`(colnames(radar))
+min <- rep(0, ncol(radar))
+radar <- rbind(t(data.frame(Max = max, Min = min)), radar)
+
+# Reduce plot margin using par()
+opar <- par()
+par(mar = rep(0.5,4))
+
+cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", i))
+ 
+ # Base R radar chart saving as SVG
+  baser_radar_svg_filename <- file.path(output_dir, paste0(i, "_baser_radar_h_sscst_sscpr.svg"))
+  svg(filename = baser_radar_svg_filename, width = fig_dim[1], height = fig_dim[2])
+
+create_beautiful_radarchart(
+  data = radar,
+  color = metadata(spe)$color_vectors$progressive_skin,
+  title=paste0("Frequencies of ", i),
+  caxislabels = rep("", 5)
+); legend(
+  x = "bottom", legend = rownames(radar[-c(1,2),]), horiz = TRUE,
+  bty = "n", pch = 20 , col = metadata(spe)$color_vectors$progressive_skin,
+  text.col = "black", cex = 1, pt.cex = 1.5, x.intersp = 1
+  )
+
+dev.off()
+# Restore the standard par() settings
+par(opar)
+
+# Embed and provide download link for the base R radar plot
+  cat(sprintf("\n\n### %s_baser_radar\n", i))
+  cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', baser_radar_svg_filename))
+  cat(sprintf('<a href="%s" download>Download base r Radar Plot as SVG</a>\n\n', baser_radar_svg_filename))
+
+## Z-score transformation for individual clusters
+zscores <- data %>%  group_by(label) %>% mutate(zscore = (percent - mean(percent, na.rm = T)) / sd(percent, na.rm = T))  
+radar <- zscores %>% group_by(Progression_skin, label) %>%
+  summarize(p.label=median(zscore)) %>% pivot_wider(names_from = label, values_from = p.label) %>%
+  column_to_rownames("Progression_skin")
+#radar <- radar[,order(-as.numeric(radar["NH",]))]
+
+max <- rep(max(radar)+0.2, ncol(radar)) %>% `names<-`(colnames(radar))
+min <- rep(min(radar)-0.2, ncol(radar))
+radar <- rbind(t(data.frame(Max = max, Min = min)), radar)
+
+# Reduce plot margin using par()
+opar <- par()
+par(mar = rep(0.5,4))
+
+# Base R radar chart for Z-scores
+  baser_radar_zscore_svg_filename <- file.path(output_dir, paste0(i, "_baser_radar_zsc_h_sscst_sscpr.svg"))
+  svg(filename = baser_radar_zscore_svg_filename, width = fig_dim[1], height = fig_dim[2])
+
+# Create the radar charts
+create_beautiful_radarchart(
+  data = radar,
+  color = metadata(spe)$color_vectors$progressive_skin,
+  title=paste0("Z-score transformed frequencies of ", i),
+  caxislabels = rep("", 5)
+); legend(
+  x = "bottom", legend = rownames(radar[-c(1,2),]), horiz = TRUE,
+  bty = "n", pch = 20 , col = metadata(spe)$color_vectors$progressive_skin,
+  text.col = "black", cex = 1.5, pt.cex = 1.5, x.intersp = 1
+  )
+
+dev.off()  # Close the SVG device to save the Z-score plot
+# Restore the standard par() settings
+par(opar)
+
+  # Embed and provide download link for the Z-score base R radar plot
+  cat(sprintf("\n\n### %s_baser_radar_zscore\n", i))
+  cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', baser_radar_zscore_svg_filename))
+  cat(sprintf('<a href="%s" download>Download Z-scored base r Radar Plot as SVG</a>\n\n', baser_radar_zscore_svg_filename))
+}
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Plots of frequencies of clusters, split between healthy and SSc and between healthy, SSc stable and SSc progressive, for the metabolic skin IMC data, as boxplots, radar plots (with ggradar and base r) and ggstatsplot.
+The output is in the format: html file, and a subfolder called `r output_dir`. 
+Keep this subfolder in the same folder as the html file! <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

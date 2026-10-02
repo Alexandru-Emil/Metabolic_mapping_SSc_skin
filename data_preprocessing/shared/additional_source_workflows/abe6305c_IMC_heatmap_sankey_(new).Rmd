@@ -1,0 +1,111 @@
+---
+title: "IMC heatmap sankey plot (new)"
+author: "Veda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library set up}
+library(SingleCellExperiment)
+library(SpatialExperiment)
+library(DelayedMatrixStats)
+library(dittoSeq)
+library(ggsankey)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(scuttle)
+# Assume `sfe` and `spe` objects are already loaded in your environment
+
+```
+
+```{r new IMC Rphenograph_500 heatmap}
+load(project_path("external/spe2025-12-17 umap.RData"))
+sfe<-readRDS(project_path("external/XeniumSfe_FibAnno_251104104458.rds"))
+
+z<-list("glycolysis"=c(2,30,32,7,15,26),"TCA_cycle"=c(29,24,31,17),"Amino_Acid"=c(8),"Fatty_acid_synthesis"=c(36),
+        "Fatty_acid_oxidation"=(34),"Pentose_Pathway"=12,"anabolic_signaling"=c(9),
+        "catabolic_signaling"=c(21),"Oxidative_stress"=c(37),
+        "hypoxia"=38,"Mitochondrial_biogenesis"=c(22,13,10))
+
+
+markers_ordered <- names(spe)[do.call(c, z)]
+
+rowData(spe)$use_channel_met_markers<-grepl("GLUT1|PKM2|CD98|p_mTOR|pNRF2|G6PD|mtTFA|LDHA|SDHA|pAMPK|PGC1a|OGDH|GAPDH|CS|HK1|ATP5A|PFKL1_PFKM|CPT1a|ACAC|NOX4|HIF1a", rownames(spe)) ## for new spe
+
+celltype_mean <- aggregateAcrossCells(as(spe[rowData(spe)$use_channel_met_markers,], "SingleCellExperiment"),  
+                                              ids = spe$"Rphenograph_500", 
+                                              statistics = "mean", 
+                                              use.assay.type = "zrescaled")
+
+spe_test <- celltype_mean
+spe_test$Rphenograph_500 <- as.character(spe_test$Rphenograph_500)
+dittoHeatmap(spe_test,
+             assay = "zrescaled", 
+             genes = markers_ordered,
+             cluster_cols = T,
+             cluster_rows = F,
+             #scale = "zscaled",
+             heatmap.colors = c(viridis(50), rep("#FDE725FF", 1.5)),
+             annot.by = c("Rphenograph_500", 'ncells'))
+
+
+
+```
+
+```{r IMC Rphenograph_500 transfer}
+load(project_path("external/spe2025-12-17 umap.RData"))
+
+head(colnames(spe))
+head(colData(sfe)$KEY)
+
+unique(colData(spe)$Rphenograph_500)
+
+# Create a lookup dataframe
+df_map <- data.frame(
+  KEY = colnames(spe),
+  Rphenograph_500 = spe$Rphenograph_500,
+  stringsAsFactors = FALSE
+)
+
+# Align based on shared KEYs
+idx <- match(colData(sfe)$KEY, df_map$KEY)
+
+# Transfer the predicted.celltype column
+colData(sfe)$Rphenograph_500 <- df_map$Rphenograph_500[idx]
+# Check a few transferred entries
+head(colData(sfe)$Rphenograph_500)
+
+# Count how many matches were successful
+sum(!is.na(colData(sfe)$Rphenograph_500))
+sum(is.na(colData(sfe)$Rphenograph_500))
+
+
+
+```
+
+```{r new IMC Rphenograph_500 sankey}
+
+df2 <- as.data.frame(S4Vectors::as.data.frame(colData(sfe)))[, c("lv3_anno", "Rphenograph_500")]
+df2 <- df2[!is.na(df2$lv3_anno) & !is.na(df2$Rphenograph_500) & df2$lv3_anno != "", ]
+
+sankey3 <- ggsankey::make_long(df2, lv3_anno, Rphenograph_500)
+
+ggplot(sankey3,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 3 – lv3_anno → Met State (met_hi / met_others only)",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(size = 10, face = "bold"))
+
+
+```

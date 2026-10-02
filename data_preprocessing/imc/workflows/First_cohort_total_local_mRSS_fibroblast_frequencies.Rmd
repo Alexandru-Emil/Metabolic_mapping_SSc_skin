@@ -1,0 +1,407 @@
+---
+title: "First-cohort fibroblast frequencies: total and local mRSS"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    code_folding: hide
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center", dpi = 180)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggtext)
+  library(patchwork)
+  library(scales)
+  library(knitr)
+})
+source("first_cohort_mrss_common.R")
+
+output_dir <- file.path(getwd(), "first_cohort_total_local_mRSS_frequency_outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Scope
+
+This report evaluates fibroblast metabolic-cluster frequencies without neighborhood conditioning. It reproduces the three originally selected current-total-mRSS plots, applies the same selections to local mRSS, and ranks all eight fibroblast metabolic clusters by their local-mRSS association.
+
+Each frequency is calculated per donor relative to all stromal cells. Donors, rather than cells, are the statistical units.
+
+## Superscript audit
+
+The metabolic-state labels use the same validated vector-safe superscripts throughout: `r superscript_state["hi"]` for hi, `r superscript_state["int"]` for int, and `r superscript_state["low"]` for low.
+
+```{r label-audit, echo=FALSE}
+kable(
+  label_audit %>% filter(grepl("^stromal_", cluster_id)),
+  caption = "Validated fibroblast metabolic-cluster labels"
+)
+```
+
+## Donor-level frequencies
+
+```{r calculate-frequencies}
+inputs <- load_first_cohort_mrss_data()
+clinical <- inputs$clinical
+
+cluster_definitions <- tibble(
+  metabolic_cluster = paste0("stromal_", 1:8),
+  display_label = unname(cluster_labels[paste0("stromal_", 1:8)]),
+  display_label_single = unname(cluster_labels_single_line[paste0("stromal_", 1:8)]),
+  display_label_html = unname(cluster_labels_html[paste0("stromal_", 1:8)]),
+  display_label_html_single = unname(cluster_labels_html_single_line[paste0("stromal_", 1:8)])
+)
+
+original_selection <- tibble(
+  panel = c("A", "B", "C"),
+  metabolic_cluster = c("stromal_2", "stromal_4", "stromal_8")
+)
+
+stromal_cells <- inputs$cell_data %>%
+  filter(indication == "SSc", celltype == "Stromal")
+
+donor_denominators <- stromal_cells %>%
+  dplyr::count(patient_id, name = "all_stromal_cells")
+
+frequency_long <- stromal_cells %>%
+  dplyr::count(patient_id, metabolic_cluster, name = "cluster_cells") %>%
+  filter(metabolic_cluster %in% cluster_definitions$metabolic_cluster) %>%
+  complete(
+    patient_id = donor_denominators$patient_id,
+    metabolic_cluster = cluster_definitions$metabolic_cluster,
+    fill = list(cluster_cells = 0L)
+  ) %>%
+  left_join(donor_denominators, by = "patient_id") %>%
+  mutate(frequency_percent = 100 * cluster_cells / all_stromal_cells) %>%
+  left_join(cluster_definitions, by = "metabolic_cluster") %>%
+  left_join(clinical, by = "patient_id")
+
+write.csv(
+  frequency_long,
+  file.path(output_dir, "all_8_donor_level_fibroblast_cluster_frequencies.csv"),
+  row.names = FALSE
+)
+
+donor_audit <- frequency_long %>%
+  distinct(patient_id, current_mRSS, local_mRSS, included_local_mRSS, all_stromal_cells) %>%
+  arrange(desc(included_local_mRSS), patient_id)
+write.csv(donor_audit, file.path(output_dir, "donor_inclusion_and_stromal_denominators.csv"), row.names = FALSE)
+```
+
+## Correlation audit
+
+```{r calculate-correlations}
+current_stats <- summarise_correlations(
+  frequency_long,
+  score_variable = "current_mRSS",
+  group_variables = c(
+    "metabolic_cluster", "display_label", "display_label_single",
+    "display_label_html", "display_label_html_single"
+  )
+) %>%
+  mutate(q_BH_8_tests = p.adjust(p_spearman_raw, method = "BH"))
+
+local_stats <- summarise_correlations(
+  frequency_long,
+  score_variable = "local_mRSS",
+  group_variables = c(
+    "metabolic_cluster", "display_label", "display_label_single",
+    "display_label_html", "display_label_html_single"
+  ),
+  exact_binary = TRUE
+) %>%
+  mutate(q_BH_8_tests = p.adjust(p_spearman_raw, method = "BH"))
+
+selected_current_stats <- original_selection %>%
+  left_join(current_stats, by = "metabolic_cluster")
+selected_local_stats <- original_selection %>%
+  left_join(local_stats, by = "metabolic_cluster")
+
+write.csv(current_stats, file.path(output_dir, "all_8_current_total_mRSS_frequency_correlations.csv"), row.names = FALSE)
+write.csv(local_stats, file.path(output_dir, "all_8_local_mRSS_frequency_correlations.csv"), row.names = FALSE)
+
+# Values independently reproduced in the preceding denominator audit.
+expected_current <- tibble(
+  metabolic_cluster = c("stromal_2", "stromal_4", "stromal_8"),
+  expected_rho = c(0.569042637953892, -0.00836827408755723, 0.510464719340991),
+  expected_p = c(0.109804000209182, 0.982953286833085, 0.160266667914605)
+)
+
+reproduction_check <- selected_current_stats %>%
+  left_join(expected_current, by = "metabolic_cluster") %>%
+  mutate(
+    rho_absolute_difference = abs(rho - expected_rho),
+    p_absolute_difference = abs(p_spearman_raw - expected_p)
+  )
+
+write.csv(reproduction_check, file.path(output_dir, "original_total_mRSS_reproduction_check.csv"), row.names = FALSE)
+stopifnot(
+  max(reproduction_check$rho_absolute_difference) < 1e-12,
+  max(reproduction_check$p_absolute_difference) < 1e-12
+)
+```
+
+The original current-total-mRSS estimates are reproduced exactly: `rho = 0.5690`, `-0.00837`, and `0.5105` for stromal clusters 2, 4, and 8, respectively.
+
+## Original selected plots: total mRSS
+
+```{r correlation-plot-function}
+make_frequency_scatter <- function(cluster_id, score = c("current", "local")) {
+  score <- match.arg(score)
+  score_variable <- if (score == "current") "current_mRSS" else "local_mRSS"
+  result_table <- if (score == "current") current_stats else local_stats
+
+  plot_data <- frequency_long %>%
+    filter(metabolic_cluster == cluster_id, !is.na(.data[[score_variable]]))
+  result <- result_table %>% filter(metabolic_cluster == cluster_id)
+  max_y <- max(plot_data$frequency_percent)
+  score_range <- range(plot_data[[score_variable]])
+  annotation_x <- if (score == "local") {
+    0.94
+  } else {
+    score_range[1] + 0.02 * diff(score_range)
+  }
+
+  annotation <- paste0(
+    "\u03c1 = ", sprintf("%.2f", result$rho),
+    ", p = ", format_p(result$p_spearman_raw)
+  )
+
+  p <- ggplot(plot_data, aes(x = .data[[score_variable]], y = frequency_percent)) +
+    geom_smooth(
+      method = "lm",
+      formula = y ~ x,
+      se = TRUE,
+      color = "blue",
+      fill = "grey82",
+      linewidth = 0.9,
+      alpha = 0.65,
+      fullrange = TRUE
+    )
+
+  if (score == "local") {
+    p <- p + geom_jitter(
+      width = 0.035, height = 0, shape = 21, size = 3,
+      stroke = 0.65, color = "grey45", fill = "white"
+    ) +
+      scale_x_continuous(breaks = c(1, 2), expand = expansion(mult = 0)) +
+      coord_cartesian(xlim = c(0.9, 2.1), ylim = c(0, max_y * 1.14), expand = FALSE)
+  } else {
+    p <- p + geom_point(shape = 21, size = 3, stroke = 0.65, color = "grey45", fill = "white") +
+      scale_x_continuous(breaks = pretty_breaks(n = 5), expand = expansion(mult = c(0.03, 0.03))) +
+      coord_cartesian(ylim = c(0, max_y * 1.14), expand = FALSE)
+  }
+
+  p +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    annotate(
+      "text",
+      x = annotation_x,
+      y = max_y * 1.08,
+      label = annotation,
+      hjust = 0,
+      vjust = 1,
+      size = 4.1,
+      fontface = "italic"
+    ) +
+    labs(
+      title = unique(plot_data$display_label_html_single),
+      x = if (score == "local") "Local mRSS" else "mRSS",
+      y = "% of all fibroblasts"
+    ) +
+    theme_classic(base_size = 14) +
+    theme(
+      plot.title = ggtext::element_markdown(size = 15, hjust = 0.5, margin = margin(b = 8)),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 12, color = "black"),
+      axis.line = element_line(linewidth = 0.55),
+      axis.ticks = element_line(linewidth = 0.55),
+      plot.margin = margin(10, 10, 8, 10)
+    )
+}
+
+current_selected_plots <- setNames(
+  lapply(original_selection$metabolic_cluster, make_frequency_scatter, score = "current"),
+  original_selection$panel
+)
+local_selected_plots <- setNames(
+  lapply(original_selection$metabolic_cluster, make_frequency_scatter, score = "local"),
+  original_selection$panel
+)
+
+for (panel_id in original_selection$panel) {
+  save_vector_and_png(
+    current_selected_plots[[panel_id]],
+    file.path(output_dir, paste0("original_panel_", panel_id, "_current_total_mRSS")),
+    4.6, 3.6
+  )
+  save_vector_and_png(
+    local_selected_plots[[panel_id]],
+    file.path(output_dir, paste0("original_panel_", panel_id, "_local_mRSS")),
+    4.6, 3.6
+  )
+}
+
+combine_three <- function(plot_list) {
+  (plot_list$A + plot_list$B + plot_list$C) +
+    plot_layout(design = "\nAABB\n#CC#\n") +
+    plot_annotation(tag_levels = "A") &
+    theme(plot.tag = element_text(size = 20, face = "plain"))
+}
+
+combined_current <- combine_three(current_selected_plots)
+combined_local <- combine_three(local_selected_plots)
+save_vector_and_png(combined_current, file.path(output_dir, "combined_original_frequencies_current_total_mRSS"), 9.2, 7.2)
+save_vector_and_png(combined_local, file.path(output_dir, "combined_original_frequencies_local_mRSS"), 9.2, 7.2)
+```
+
+```{r show-current, echo=FALSE, fig.width=9.2, fig.height=7.2}
+combined_current
+```
+
+## Same selected plots: local mRSS
+
+```{r show-local, echo=FALSE, fig.width=9.2, fig.height=7.2}
+combined_local
+```
+
+## All fibroblast clusters ranked by local mRSS
+
+```{r ranked-local}
+ranked_local <- local_stats %>%
+  arrange(desc(abs(rho)), p_spearman_raw) %>%
+  mutate(display_label_html = factor(display_label_html, levels = rev(display_label_html)))
+
+ranked_local_plot <- ggplot(ranked_local, aes(x = rho, y = display_label_html)) +
+  geom_vline(xintercept = 0, color = "grey70", linewidth = 0.4) +
+  geom_segment(aes(x = 0, xend = rho, yend = display_label_html), color = "grey73", linewidth = 0.65) +
+  geom_point(aes(size = abs(rho), color = p_spearman_raw)) +
+  scale_color_gradient(
+    name = "Raw p value",
+    low = "red",
+    high = "blue",
+    limits = c(0.001, 0.05),
+    na.value = "grey52"
+  ) +
+  scale_size_continuous(
+    name = "|Spearman \u03c1|",
+    range = c(3, 9),
+    limits = c(0, 0.30),
+    breaks = c(0.1, 0.2, 0.3)
+  ) +
+  scale_x_continuous(breaks = pretty_breaks(n = 5), expand = expansion(mult = c(0.08, 0.08))) +
+  labs(
+    title = "Fibroblast frequencies correlated with local mRSS",
+    subtitle = "All eight metabolic fibroblast clusters",
+    x = "Spearman correlation",
+    y = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title = element_text(size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.y = ggtext::element_markdown(size = 12, lineheight = 0.95),
+    axis.text.x = element_text(size = 11),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(8, 12, 8, 8)
+  )
+
+save_vector_and_png(
+  ranked_local_plot,
+  file.path(output_dir, "all_8_local_mRSS_fibroblast_frequency_correlations_lollipop"),
+  8.5, 6.2
+)
+```
+
+```{r show-ranked-local, echo=FALSE, fig.width=8.5, fig.height=6.2}
+ranked_local_plot
+```
+
+### Donor-level views of the three strongest clusters
+
+```{r top-three-local-details}
+top_three_local <- local_stats %>%
+  arrange(desc(abs(rho)), p_spearman_raw) %>%
+  slice_head(n = 3) %>%
+  mutate(rank = row_number())
+
+make_top_cluster_detail <- function(rank_value) {
+  definition <- top_three_local %>% filter(rank == rank_value)
+  plot_data <- frequency_long %>%
+    filter(metabolic_cluster == definition$metabolic_cluster, !is.na(local_mRSS)) %>%
+    mutate(local_mRSS_group = factor(local_mRSS, levels = c(1, 2)))
+
+  annotation <- paste0(
+    "\u03c1 = ", sprintf("%.2f", definition$rho),
+    ", raw p = ", format_p(definition$p_spearman_raw),
+    "\nexact p = ", format_p(definition$p_exact_permutation),
+    ", BH q = ", format_p(definition$q_BH_8_tests)
+  )
+
+  ggplot(plot_data, aes(x = local_mRSS_group, y = frequency_percent, fill = local_mRSS_group)) +
+    geom_boxplot(width = 0.5, outlier.shape = NA, linewidth = 0.65, alpha = 0.65) +
+    geom_jitter(width = 0.08, height = 0, shape = 21, size = 3.1, stroke = 0.65, color = "black") +
+    annotate("text", x = 1.02, y = max(plot_data$frequency_percent) * 1.13,
+             label = annotation, hjust = 0, vjust = 1, size = 3.7) +
+    scale_fill_manual(values = c("1" = "#C9D8E8", "2" = "#EFA19A"), guide = "none") +
+    scale_y_continuous(expand = expansion(mult = c(0.03, 0.20))) +
+    labs(title = definition$display_label_html_single, x = "Local mRSS", y = "% of all fibroblasts") +
+    theme_classic(base_size = 13) +
+    theme(
+      plot.title = ggtext::element_markdown(size = 13, hjust = 0.5, margin = margin(b = 8)),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 11, color = "black"),
+      plot.margin = margin(10, 10, 8, 10)
+    )
+}
+
+top_cluster_plots <- setNames(lapply(1:3, make_top_cluster_detail), paste0("rank", 1:3))
+for (i in 1:3) {
+  save_vector_and_png(
+    top_cluster_plots[[i]],
+    file.path(output_dir, paste0("top_local_frequency_rank_", i, "_donor_level")),
+    5.0, 4.1
+  )
+}
+
+combined_top_clusters <- top_cluster_plots$rank1 + top_cluster_plots$rank2 + top_cluster_plots$rank3 +
+  plot_layout(ncol = 3) + plot_annotation(tag_levels = "A")
+save_vector_and_png(
+  combined_top_clusters,
+  file.path(output_dir, "top_3_local_mRSS_fibroblast_frequencies_combined"),
+  15, 4.3
+)
+```
+
+```{r show-top-three, echo=FALSE, fig.width=15, fig.height=4.3}
+combined_top_clusters
+```
+
+## Statistical table
+
+```{r local-table, echo=FALSE}
+kable(
+  local_stats %>%
+    arrange(desc(abs(rho))) %>%
+    select(display_label_single, n_donors, rho, p_spearman_raw, p_exact_permutation, q_BH_8_tests),
+  digits = 4,
+  caption = "All eight fibroblast-cluster frequency correlations with local mRSS"
+)
+```
+
+## Interpretation
+
+- The three total-mRSS plots reproduce the original prespecified figure.
+- The local-mRSS ranking evaluates all eight fibroblast metabolic clusters and does not introduce an unreported denominator change.
+- Local mRSS is available for eight donors and has only two observed values. Exact permutation p-values and BH q-values are therefore reported with the Spearman estimates.
+- The top-three donor-level plots are exploratory visualizations of the ranking, not independent confirmatory tests.
+
+```{r session-info}
+sessionInfo()
+```

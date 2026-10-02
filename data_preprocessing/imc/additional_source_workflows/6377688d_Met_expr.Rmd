@@ -1,0 +1,712 @@
+---
+title: "Heatmap metabolic markers in healthy SSc"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE,results='hide'}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, eval=FALSE) 
+```
+
+```{r load data, eval=TRUE}
+
+dir<- c(paste0(project_path(""), "/"))
+
+dir_r <- "data_preprocessing/common"
+
+source(file.path(dir_r, "get_ts_rightformat_fx.R"))
+
+ts <- get_ts_rightformat()
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+
+library(tidyverse)
+library(imcRtools)
+library(SpatialExperiment)
+library(scuttle)
+library(CATALYST)
+library(dittoSeq)
+library(ggpubr)
+library(rstatix)
+library(ggstatsplot)
+library(viridis)
+
+load(paste0(dir,"spe_list.RData"))
+spe <- spe_list$spe
+rm(spe_list)
+
+source(file.path(dir_r, "output_dir_svg_plots_fx.R"))
+output_dir <- output_dir_svg_plots_fx(ts)
+
+```
+
+# Prepare spe for analysis
+
+```{r prep spe, eval=TRUE, cache=TRUE}
+# Create a new data frame with all the colData of the spe object - to recode the patient_id column
+
+metadata <- colData(spe)
+
+# add a new column to metadata called Donor where you recode the patient_id column
+# the elements starting with NH should be called Healthy1, Healthy2, etc.
+# the elements starting with SSc should be called SSc1, SSc2, etc.
+metadata$Donor <- dplyr::recode(metadata$patient_id,
+                                     Healthy1="Healthy1",
+                                     Healthy2="Healthy2", 
+                                     SSc1="SSc1",
+                                     SSc2="SSc2",
+                                     SSc3="SSc3",
+                                     SSc4="SSc4",
+                                     SSc5="SSc5",
+                                     SSc6="SSc6",
+                                     SSc7="SSc7",
+                                     SSc8="SSc8",
+                                     Healthy3="Healthy3",
+                                     Healthy4="Healthy4",
+                                     SSc9="SSc9",
+                                     Healthy5="Healthy5",
+                                     Healthy6="Healthy6",
+                                     Healthy7="Healthy7")
+
+metadata$Disease <- dplyr::recode(metadata$indication,
+                                  NH="Healthy",
+                                  SSc="SSc")
+
+metadata$ILD <- dplyr::recode(metadata$ILD,
+                                     healthy="healthy",
+                                     "1"="ILD", 
+                                     "0"="no ILD")
+
+metadata$Arthritis[is.na(metadata$Arthritis)] <- "no arthritis"
+
+# Assign the new column in metadata to the spe object
+spe$Donor <- metadata$Donor
+spe$ILD <- metadata$ILD
+spe$Arthritis <- metadata$Arthritis
+spe$Disease <- metadata$Disease
+
+names(colData(spe))[which(names(colData(spe))=="Skin.progression.at.biopsy")]="Progression_skin"
+names(colData(spe))[which(names(colData(spe))=="Subtype.(dc/lc)")]="Subtype_dc_lc"
+
+met_markers <- c("Glut1",
+                 "HK1",
+                 "PFKL1",
+                 "PKM2",
+                 "LDHA",
+                 "GAPDH",
+                 "CS",
+                 "OGDH",
+                 "ATP5A",
+                 "SDHA",
+                 "CD98",
+                 "ACAC",
+                 "CPT1a",
+                 "G6PD",
+                 "p_mTOR",
+                 "pAMPK",
+                 "NOX4",
+                 "HIF1a",
+                 "PGC-1a",
+                 "TFAM",
+                 "NRF2_p")
+
+glycolysis_markers <- c("Glut1",
+                 "HK1",
+                 "PFKL1",
+                 "PKM2",
+                 "LDHA",
+                 "GAPDH")
+
+no_met_markers <- setdiff(rownames(spe),met_markers) 
+rowData(spe)$use_channel_met_markers <- rownames(spe) %in% met_markers
+rowData(spe)$use_channel_glyc_markers <- rownames(spe) %in% glycolysis_markers
+
+# define clinical categories
+clinical_cat <- c("Disease","Progression_skin", "Arthritis", "DU.history", "ILD", "Subtype_dc_lc", "Early.or.not")
+
+spe[[clinical_cat[1]]] <- factor(spe[[clinical_cat[1]]], levels = c("Healthy", "SSc"))
+spe[[clinical_cat[2]]] <- factor(spe[[clinical_cat[2]]], levels = c("healthy", "progressive", "stable"))
+spe[[clinical_cat[3]]] <- factor(spe[[clinical_cat[3]]], levels = c("healthy","arthritis","no arthritis"))
+spe[[clinical_cat[4]]] <- factor(spe[[clinical_cat[4]]], levels = c("healthy","DU history","no DU history"))
+spe[[clinical_cat[5]]] <- factor(spe[[clinical_cat[5]]], levels = c("healthy","ILD","no ILD"))
+spe[[clinical_cat[6]]] <- factor(spe[[clinical_cat[6]]], levels = c("healthy","dcSSc","lcSSc"))
+spe[[clinical_cat[7]]] <- factor(spe[[clinical_cat[7]]], levels = c("healthy","early","late"))
+
+# define color vectors
+color_vectors <- list()
+pheno_clusters_new <- setNames(c("#C4281C","#C2DAB8","#E8BAC8","#80BBDB","#C470A0","#0D69AC","#F5CD30","#287F47",
+                                 "#A05F35","#D9856C","#6B327C","#008F9C","#C7D23C","#B7D7D5","#923978","#27462D",
+                                 "#FF9494","#938767","#FFF67B","#E1A4C2","#FC7B1B","#CD6298","#102ADC"), 
+                               as.character(unique(spe$pheno_clusters_new)))
+
+indication <- setNames(c("#4DBBD533", "#E64B35AA"),
+                       c(unique(colData(spe)$Disease)))
+
+Donor <- setNames(c("#FFFF33", "#FFCC66",'#FF9933','#FF6633','#00FFFF','#FF0033','#79B5B5', '#C470A0',
+                         '#996633','#999933','#99CC33','#FF9494', '#33FF33','#336633', '#330066','#923978'),
+                       c(unique(colData(spe)$Donor)))
+
+Neighbourhood_del_80_pheno_new <- setNames(c("#CC00CC", "#260EEC", "#FFCA28", "#004D40","#FF6633","#66FF66", 
+                                             "#EF9EA7", "#990000", "#CC0033","#4FC3F7"),
+                                           unique(spe$Neighbourhood_del_80_pheno_new))
+
+color_vectors$clusters <- pheno_clusters_new
+color_vectors$Disease <- indication
+color_vectors$Donor <- Donor
+color_vectors$neighbourhood_del_80_pheno_new <- Neighbourhood_del_80_pheno_new
+
+color_vectors[[clinical_cat[2]]] <- setNames(c("#4DBBD533", "#C03830", "#F6BF93"), unique(spe[[clinical_cat[2]]]))
+color_vectors[[clinical_cat[3]]] <- setNames(c("#4DBBD533","#377EB8","#4DAF4A"), unique(spe[[clinical_cat[3]]]))
+color_vectors[[clinical_cat[4]]] <- setNames(c("#4DBBD533","#FC8D62","#8DA0CB"), unique(spe[[clinical_cat[4]]]))
+color_vectors[[clinical_cat[5]]] <- setNames(c("#4DBBD533","#FFFFB3","#BEBADA"), unique(spe[[clinical_cat[5]]]))
+color_vectors[[clinical_cat[6]]] <- setNames(c("#4DBBD533","#A6D854","#FFD92F"), unique(spe[[clinical_cat[6]]]))
+color_vectors[[clinical_cat[7]]] <- setNames(c("#4DBBD533","#F781BF","#999999"), unique(spe[[clinical_cat[7]]]))
+
+metadata(spe)$color_vectors <- color_vectors
+
+
+# define an spe of all cells except epithelial cells
+spe_not_Epith <- spe[,which(!spe$new_celllabels=="E-cad+")]
+
+```
+
+# Aggregate by healthy and SSc
+
+```{r aggreg, eval=TRUE, cache=TRUE}
+
+patient_mean_not_Epith <- aggregateAcrossCells(as(spe_not_Epith, "SingleCellExperiment"),  
+                     ids = spe_not_Epith$patient_id, 
+                     statistics = "mean",
+                     use.assay.type = "z-rescaled", 
+                     subset.row = rownames(spe_not_Epith)[rowData(spe_not_Epith)$use_channel_met_markers])
+
+
+names(colData(patient_mean_not_Epith))[which(names(colData(patient_mean_not_Epith))=="ncells")]="Cells_number"
+
+patient_mean_all_cells <- aggregateAcrossCells(as(spe, "SingleCellExperiment"),  
+                     ids = spe$patient_id, 
+                     statistics = "mean",
+                     use.assay.type = "z-rescaled", 
+                     subset.row = rownames(spe)[rowData(spe)$use_channel_met_markers])
+
+names(colData(patient_mean_all_cells))[which(names(colData(patient_mean_all_cells))=="ncells")]="Cells_number"
+
+```
+
+# Heatmap z score rescaled - all cells except epithelial {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 12)`
+
+```{r heatmap1, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+  while (!is.null(dev.list())) dev.off()
+cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", "EMPTY"))
+  counter <- 1
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+  dittoHeatmap(patient_mean_not_Epith, 
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          "Donor", 
+                          "Cells_number"),
+             annotation_colors = list(Disease = metadata(spe)$color_vectors$Disease,
+                                      Donor = metadata(spe)$color_vectors$Donor,
+                                      Cells_number = plasma(100)))
+dev.off()
+
+# Embed and provide download link
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))
+
+for (cl_cat in clinical_cat[1:length(clinical_cat)]){
+  
+  cat(sprintf("\n\n## Heatmap annotated by %s {.tabset .tabset-pill}\n", cl_cat))
+  
+    annotation_colors <- list(
+    Disease = metadata(spe)$color_vectors$Disease,
+    Donor = metadata(spe)$color_vectors$Donor,
+    Cells_number = plasma(100)
+  )
+   
+  # Dynamically add the color for the current clinical category with proper naming
+  annotation_colors[[cl_cat]] <- metadata(spe)$color_vectors[[cl_cat]]
+  
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+dittoHeatmap(patient_mean_not_Epith, 
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          cl_cat,
+                          "Donor", 
+                          "Cells_number"),
+             annotation_colors = annotation_colors)
+  dev.off()
+  
+# Embed and provide download link
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))  
+}
+
+ annotation_colors <- list(
+    Disease = metadata(spe)$color_vectors$Disease,
+   # Donor = metadata(spe)$color_vectors$Donor,
+    Cells_number = plasma(100)
+  )
+ 
+ for (i in 2:length(clinical_cat)){
+   cl_cat <- clinical_cat[i]
+   # Dynamically add the color for the current clinical category with proper naming
+   annotation_colors[[cl_cat]] <- metadata(spe)$color_vectors[[cl_cat]]
+ }
+ 
+  
+cat(sprintf("\n\n## Heatmap annotated by %s {.tabset .tabset-pill}\n", "all clinical groups")) 
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+dittoHeatmap(patient_mean_not_Epith, 
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          clinical_cat[2:length(clinical_cat)],
+                          #"Donor", 
+                          "Cells_number"),
+             annotation_colors = annotation_colors)
+dev.off()
+
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))
+```
+
+# Heatmap z score rescaled - all cells {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 12)`
+
+```{r heatmap2, eval=TRUE, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+  while (!is.null(dev.list())) dev.off()
+
+cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", "EMPTY"))
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+dittoHeatmap(patient_mean_all_cells,
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          "Progression_skin",
+                          "Donor", 
+                          "Cells_number"),
+             annotation_colors = list(Disease = metadata(spe)$color_vectors$Disease,
+                                      Donor = metadata(spe)$color_vectors$Donor,
+                                      Cells_number = plasma(100)))
+dev.off()
+
+# Embed and provide download link
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))
+
+for (cl_cat in clinical_cat[1:length(clinical_cat)]){
+  
+    cat(sprintf("\n\n## Heatmap annotated by %s {.tabset .tabset-pill}\n", cl_cat))
+  
+  annotation_colors <- list(
+    Disease = metadata(spe)$color_vectors$Disease,
+    Donor = metadata(spe)$color_vectors$Donor,
+    Cells_number = plasma(100)
+  )
+   
+  # Dynamically add the color for the current clinical category with proper naming
+  annotation_colors[[cl_cat]] <- metadata(spe)$color_vectors[[cl_cat]]
+  
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+  dittoHeatmap(patient_mean_all_cells, 
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          cl_cat,
+                          "Donor", 
+                          "Cells_number"),
+             annotation_colors = annotation_colors)
+  dev.off()
+  
+# Embed and provide download link
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))
+}
+
+ annotation_colors <- list(
+    Disease = metadata(spe)$color_vectors$Disease,
+   # Donor = metadata(spe)$color_vectors$Donor,
+    Cells_number = plasma(100)
+  )
+ 
+ for (i in 2:length(clinical_cat)){
+   cl_cat <- clinical_cat[i]
+   # Dynamically add the color for the current clinical category with proper naming
+   annotation_colors[[cl_cat]] <- metadata(spe)$color_vectors[[cl_cat]]
+ }
+ 
+ cat(sprintf("\n\n## Heatmap annotated by %s {.tabset .tabset-pill}\n", "all clinical groups")) 
+ 
+  plot_filename <- file.path(output_dir, paste0(counter,".svg"))
+  counter <- counter + 1
+  
+  svg(filename = plot_filename, width = fig_dim[1], height = fig_dim[2])
+dittoHeatmap(patient_mean_all_cells, 
+             genes=met_markers,
+             assay = "z-rescaled", 
+             cluster_cols = TRUE,
+             cluster_rows = FALSE,
+             scale="row",
+             annot_col=c(""),
+             annot.by = c("Disease",
+                          clinical_cat[2:length(clinical_cat)],
+                          #"Donor", 
+                          "Cells_number"),
+             annotation_colors = annotation_colors)
+dev.off()
+
+cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', plot_filename))
+cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', plot_filename))
+```
+
+# Create CATALYST-compatible spe
+
+```{r CAT spe, eval=TRUE, cache=TRUE}
+
+spe_cat <- spe
+
+spe_cat_not_Epith <- spe_not_Epith
+
+spe_cat$sample_id <- factor(spe$Donor)
+spe_cat$condition <- factor(spe$Progression_skin)
+spe_cat$cluster_id <- factor(spe$pheno_clusters_new)
+
+spe_cat_not_Epith$sample_id <- factor(spe_not_Epith$Donor)
+spe_cat_not_Epith$condition <- factor(spe_not_Epith$Progression_skin)
+spe_cat_not_Epith$cluster_id <- factor(spe_not_Epith$pheno_clusters_new)
+
+# Add celltype information to metadata
+metadata(spe_cat)$cluster_codes <- data.frame(celltype = factor(spe_cat$pheno_clusters_new))
+metadata(spe_cat_not_Epith)$cluster_codes <- data.frame(celltype = factor(spe_cat_not_Epith$pheno_clusters_new))
+
+```
+
+# MDS pseudobulk by patient - all cells except epithelial {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 7)`
+
+```{r MDS1, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+metadata(spe_cat)$color_vectors$Progression_skin <- setNames(c("#6CC3F4", "#C03830", "#F6BF93"), unique(spe$Progression_skin))
+
+pbMDS(spe_cat_not_Epith, 
+      by = "sample_id", 
+      assay = "z-rescaled",
+      features = rownames(spe_cat_not_Epith)[rowData(spe_cat_not_Epith)$use_channel_met_markers])+
+      #color_by="sample_id",
+      #label_by = "sample_id") +
+      #k = "celltype")
+      #shape_by = "condition") 
+     # size_by = TRUE) +
+  scale_color_manual(values = metadata(spe_cat)$color_vectors$Progression_skin)
+
+```
+
+# MDS pseudobulk by patient - all cells {.tabset .tabset-pill}
+
+`r fig_dim <- c(10, 7)`
+
+```{r MDS2, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+pbMDS(spe_cat, 
+      by = "sample_id", 
+      assay = "z-rescaled",
+      features = rownames(spe_cat)[rowData(spe_cat)$use_channel_met_markers])+
+      #color_by="sample_id",
+      #label_by = "sample_id", 
+      #k = "celltype")
+      #shape_by = "condition") 
+     # size_by = TRUE) #+
+ scale_color_manual(values = metadata(spe_cat)$color_vectors$Progression_skin)
+
+```
+
+# Reduced dimension plot on CLR of proportions {.tabset .tabset-pill}
+
+`r fig_dim <- c(10,10)`
+
+```{r clr, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+# CLR on sample proportions across clusters
+clrDR(spe_cat, 
+      dr = "PCA", 
+      by = "sample_id", 
+      label_by = "sample_id",
+      point_col = "sample_id",
+      arrow_col="cluster_id",
+      #shape_by = "condition", 
+      k = "celltype",
+      point_pal = metadata(spe)$color_vectors$Donor) +
+  scale_color_manual(values = metadata(spe)$color_vectors$clusters)
+
+# CLR on cluster proportions across samples
+clrDR(spe_cat, 
+      dr = "PCA", 
+      by = "cluster_id", 
+      k = "celltype", 
+      label_by = "cluster_id", 
+      arrow_col = "sample_id", 
+      point_pal = metadata(spe_cat)$color_vectors$clusters) 
+
+```
+
+# Boxplots glycolysis and TCA/ETC scores by disease - all cells except epithelial - ggplot {.tabset .tabset-pill}
+
+`r fig_dim <- c(5, 5)`
+
+```{r plot met scores1, eval=TRUE, fig.width=fig_dim[1], fig.height=fig_dim[2], results='asis'}
+
+metabolic_scores <- c("Glycolysis_z_c","Glycolysis_z", "TCA_z_c", "TCA_z")
+source(file.path(dir_r, "get_common_boxplot_components_fx.R"))
+
+for_plot2 <- NULL
+boxplot_plot_list <- list()
+for(met_scores in metabolic_scores){
+  for (cl_cat in clinical_cat){
+for_plot2 <- NULL
+#my_comparisons <- NULL
+for_plot2 <- data.frame(score=colData(spe_not_Epith)[,met_scores],
+                        Disease=colData(spe_not_Epith)[,cl_cat],
+                        Patient_ID=spe_not_Epith$patient_id)%>%
+  group_by(Disease,Patient_ID)%>%
+  summarise(score=median(score,na.rm=T))
+
+
+    disease_levels <- unique(for_plot2$Disease)
+    if (length(disease_levels) > 2) {
+
+# Statistics
+kruskal_res <- compare_means (score ~ Disease, data=for_plot2,method="kruskal.test") %>% mutate (comparison=cl_cat)
+dunn_res <- as.data.frame(for_plot2) %>% rstatix::dunn_test (score ~ Disease, 
+                                                             p.adjust.method="none")%>%
+  mutate (method="Dunn")
+
+my_comparisons <- combn(unique(for_plot2$Disease), 2, simplify = FALSE)
+my_comparisons <- lapply(my_comparisons,as.character)
+    
+    # Generate the boxplot
+    boxplot_plot <- ggplot(data = for_plot2, aes(x = Disease, y = score)) +
+      geom_boxplot(outlier.shape = NA, aes(fill=Disease)) +
+      stat_pvalue_manual(dunn_res%>%
+                           mutate(
+                             p_label = case_when(
+                               p < 0.001 ~ sprintf("p = %.2e", p),
+                               p < 0.01 ~ sprintf("p = %.5f", p),
+                               p < 0.1 ~ sprintf("p = %.4f", p),
+                               TRUE ~ sprintf("p = %.3f", p)
+                             ),
+                             y.position=c(max(for_plot2$score+0.25),
+                                          max(for_plot2$score+0.5),
+                                          max(for_plot2$score+0.25))
+                           ),
+                         label = "p_label",
+                         hide.ns = FALSE,
+                         bracket.shorten = 0.05) +
+      stat_compare_means(method="kruskal", label.y=max(for_plot2$score +0.75))+
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      get_common_boxplot_components()+
+      scale_fill_manual(values = metadata(spe)$color_vectors[[cl_cat]])+ 
+      labs(x = "Disease", y = "Score") +
+      ggtitle(paste0(met_scores, " score for ", cl_cat))
+    
+    # Store the plot in the list with a unique name
+    plot_name <- paste0(met_scores, "_", cl_cat,"_plot")
+    kruskal_name <- paste0(met_scores, "_", cl_cat,"_kruskal")
+    dunn_name <- paste0(met_scores, "_", cl_cat,"_dunn")
+    boxplot_plot_list[[plot_name]] <- boxplot_plot
+    boxplot_plot_list[[kruskal_name]] <- kruskal_res
+    boxplot_plot_list[[dunn_name]] <- dunn_res
+    
+  
+    } else {
+# Statistics
+wilcox_res <- compare_means(score ~ Disease, data=for_plot2, method="wilcox.test")
+my_comparisons <- combn(unique(for_plot2$Disease), 2, simplify = FALSE)
+my_comparisons <- lapply(my_comparisons,as.character)
+    
+    # Generate the boxplot
+    boxplot_plot <- ggplot(data = for_plot2, aes(x = Disease, y = score)) +
+      geom_boxplot(outlier.shape = NA, aes(fill=Disease)) +
+      stat_compare_means(comparisons=list(as.character(unique(for_plot2$Disease))),
+                           method="wilcox", label.y=max(for_plot2$score+0.25))+
+      # stat_compare_means(
+      #   comparisons = my_comparisons,
+      #   method = "wilcox.test",
+      #   aes(label = "p.format"),
+      #   hide.ns = FALSE
+      # ) +
+      get_common_boxplot_components()+
+      scale_fill_manual(values = metadata(spe)$color_vectors$Disease)+ 
+      labs(x = "Disease", y = "Score") +
+      ggtitle(paste0(met_scores, " score for ", cl_cat))
+    
+     # Store the plot in the list with a unique name
+    plot_name <- paste0(met_scores, "_", cl_cat,"_plot")
+    wilcox_name <- paste0(met_scores, "_", cl_cat,"_wilcox")
+    boxplot_plot_list[[plot_name]] <- boxplot_plot
+    boxplot_plot_list[[wilcox_name]] <- wilcox_res
+    }
+
+  }
+}
+
+for(met_scores in metabolic_scores){
+    # create a tab for each metabolic score
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", met_scores))
+  # subset the boxplot_plot_list to names of the current metabolic score
+  boxplot_plot_list_subset <- boxplot_plot_list[grep(met_scores, names(boxplot_plot_list), value = TRUE)]
+  for (cl_cat in clinical_cat){
+    # subset the boxplot_plot_list_subset to names of the current clinical category
+    boxplot_plot_list_subset_subset <- boxplot_plot_list_subset[grep(paste0(met_scores,"_",cl_cat,"_plot"), names(boxplot_plot_list_subset), value = TRUE)]
+    # save the plot as SVG
+    svg_filename <- file.path(output_dir, paste0(met_scores, "_", cl_cat,".svg"))
+    ggsave(filename = svg_filename, plot = boxplot_plot_list_subset_subset[[1]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    # Embed and provide download link
+    cat(sprintf("\n\n### %s\n", cl_cat))
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', svg_filename))
+    cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', svg_filename))
+    }
+  }
+
+# Display the plots in R markdown (optional)
+# for (plot_name in names(boxplot_plot_list)) {
+#   print(boxplot_plot_list[[plot_name]])
+# }
+#boxplot_plot_list
+
+```
+
+# Boxplots glycolysis and TCA/ETC scores by disease - all cells except epithelial - ggstatsplot {.tabset .tabset-pill}
+
+`r fig_dim <- c(5, 5)`
+  
+```{r plot met scores2, eval=TRUE, fig.dim=fig_dim, results='asis'}
+
+metabolic_scores <- c("Glycolysis_z_c","Glycolysis_z", "TCA_z_c", "TCA_z")
+
+for_plot3 <- NULL
+boxplot_plot_list2 <- list()
+for(met_scores in metabolic_scores){
+  for (cl_cat in clinical_cat){
+for_plot3 <- NULL
+#my_comparisons <- NULL
+for_plot3 <- data.frame(score=colData(spe_not_Epith)[,met_scores],
+                        Disease=colData(spe_not_Epith)[,cl_cat],
+                        Patient_ID=spe_not_Epith$patient_id)%>%
+  group_by(Disease,Patient_ID)%>%
+  summarise(score=median(score,na.rm=T))
+
+    ggstats_boxplot <- ggbetweenstats(data = for_plot3, x = Disease, y = score, 
+                              type = "nonparametric", 
+                              p.adjust.method = "none",
+                              ggplot.component = list(ggplot2::scale_color_manual(values=
+                              metadata(spe)$color_vectors[[cl_cat]])), 
+                              k = 4, 
+                              pairwise.display = "all",
+                              centrality.point.args = list(size = 0), 
+                              violin.args = list(width = 0)) + 
+      ylab('Score')+
+      ggtitle(paste0(met_scores, " score for ", cl_cat))
+    
+     # Store the plot in the list with a unique name
+    plot_name2 <- paste0(met_scores, "_", cl_cat,"_plot")
+    boxplot_plot_list2[[plot_name2]] <- ggstats_boxplot
+
+  }
+}
+
+for(met_scores in metabolic_scores){
+    # create a tab for each metabolic score
+  cat(sprintf("\n\n## %s {.tabset .tabset-pill}\n", met_scores))
+  # subset the boxplot_plot_list to names of the current metabolic score
+  boxplot_plot_list_subset2 <- boxplot_plot_list2[grep(met_scores, names(boxplot_plot_list2), value = TRUE)]
+  for (cl_cat in clinical_cat){
+    # subset the boxplot_plot_list_subset to names of the current clinical category
+    boxplot_plot_list_subset_subset2 <- boxplot_plot_list_subset2[grep(paste0(met_scores,"_",cl_cat,"_plot"), names(boxplot_plot_list_subset2), value = TRUE)]
+    # save the plot as SVG
+    svg_filename <- file.path(output_dir, paste0(met_scores, "_", cl_cat,"_ggstatsplot.svg"))
+    ggsave(filename = svg_filename, plot = boxplot_plot_list_subset_subset2[[1]], device = "svg", width = fig_dim[1], height = fig_dim[2])
+    # Embed and provide download link
+    cat(sprintf("\n\n### %s\n", cl_cat))
+    cat(sprintf('<object type="image/svg+xml" data="%s" width="600"></object>\n', svg_filename))
+    cat(sprintf('<a href="%s" download> Download Plot as SVG</a>\n\n', svg_filename))
+    }
+  }
+
+# Display the plots in R markdown (optional)
+# for (plot_name in names(boxplot_plot_list2)) {
+#   print(boxplot_plot_list2[[plot_name]])
+# }
+#boxplot_plot_list
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Plots of frequencies of clusters, split between healthy and SSc and between healthy, SSc stable and SSc progressive, for the metabolic skin IMC data, as boxplots, radar plots (with ggradar and base r) and ggstatsplot.
+The output is in the format: html file, and a subfolder called `r output_dir`. 
+Keep this subfolder in the same folder as the html file! <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+

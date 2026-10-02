@@ -1,0 +1,319 @@
+---
+title: "Clincal correlations as dotplots"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE, root.dir = here::here())
+
+```
+
+```{r timestamp, eval=TRUE}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+Import the datasets created with the RMarkdown `Clinicaldata_tables.Rmd` (export firstly the Datatable outputs as .csv files and save them in the format "cor\_... .csv" in `r here("Datasets")`).
+
+# Load datasets
+
+```{r load datasets, eval=TRUE}
+file_paths <- list.files(here("Datasets"), pattern = "cor_", full.names = TRUE)
+# Example: read in your CSV (modify path and column names as appropriate)
+list_df <- setNames(lapply(file_paths, read.csv), 
+                    gsub(".*cor_(.*?)_hasneigh\\.csv", "\\1", file_paths))
+```
+
+# Prepare datasets for analysis
+
+```{r prep datasets, eval=TRUE}
+
+list_df <- lapply(list_df, function(x) {
+  x$label2 <- recode(
+  x$label,
+  "with_CD31_1_neigh" = "Met<sup>low</sup>_EC",
+  "with_CD31_2_neigh" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_EC",
+  "with_CD31_3_neigh" = "Met<sup>hi</sup>_EC",
+  "with_CD31_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "with_CD31_5_neigh" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "with_CD45_CD68_1_neigh" = "Met<sup>hi</sup>_Mf",
+  "with_CD45_CD68_2_neigh" = "Met<sup>low</sup>_Mf",
+  "with_CD45_CD68_3_neigh" = "Glycolysis<sup>low</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_CD45_CD68_4_neigh" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_stromal_1_neigh" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_2_neigh" = "Met<sup>hi</sup>_Fib",
+  "with_stromal_3_neigh" = "TCA/OXPHOS<sup>int</sup>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "with_stromal_5_neigh" = "Met<sup>low</sup>_Fib",
+  "with_stromal_6_neigh" = "Glycolysis<sup>int</sup>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "with_stromal_7_neigh" = "Glut<sup>hi</sup>_Fib",
+  "with_stromal_8_neigh" = "Glycolysis<sup>int</sup>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+  return(x)
+})
+
+list_df <- lapply(list_df, function(x) {
+  x$cluster_var2 <- recode(
+  x$cluster_var,
+  "CD31_1" = "Met<sup>low</sup>_EC",
+  "CD31_2" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_EC",
+  "CD31_3" = "Met<sup>hi</sup>_EC",
+  "CD31_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "CD31_5" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "CD45_CD68_1" = "Met<sup>hi</sup>_Mf",
+  "CD45_CD68_2" = "Met<sup>low</sup>_Mf",
+  "CD45_CD68_3" = "Glycolysis<sup>low</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "CD45_CD68_4" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "stromal_1" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_2" = "Met<sup>hi</sup>_Fib",
+  "stromal_3" = "TCA/OXPHOS<sup>int</sup>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "stromal_5" = "Met<sup>low</sup>_Fib",
+  "stromal_6" = "Glycolysis<sup>int</sup>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "stromal_7" = "Glut<sup>hi</sup>_Fib",
+  "stromal_8" = "Glycolysis<sup>int</sup>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+  return(x)
+})
+
+list_df  <- lapply(list_df, function(x) {
+  x %>% mutate(celltype_with_nbh = paste(cluster_var,label, sep = "_"))
+})
+
+celltype_neigh_plot <- c("stromal_2_with_stromal_4_neigh",
+                         "stromal_2_with_stromal_5_neigh",
+                         "stromal_2_with_CD31_4_neigh",
+                         "stromal_2_with_CD31_5_neigh",
+                         "stromal_4_with_stromal_2_neigh",
+                         "stromal_8_with_stromal_2_neigh",
+                         "stromal_8_with_CD45_CD68_1_neigh")
+
+df_comb <- bind_rows(list_df) 
+
+df_comb$clinical_var <- case_when(
+  df_comb$clinical_var == "Age_at_the_time_of_biopsy_years" ~ "Age",
+  df_comb$clinical_var == "CRP" ~ "CRP",
+  df_comb$clinical_var == "non_RP_disease_duration" ~ "Disease duration",
+  df_comb$clinical_var == "EUSTAR_score_2017" ~ "Disease activity",
+  df_comb$clinical_var == "current_mRSS" ~ "mRss")
+
+df_comb2 <- df_comb %>% filter(celltype_with_nbh %in% celltype_neigh_plot)
+
+```
+
+# Plot overall differences
+
+```{r plot overall, eval=TRUE, fig.width=9, fig.height=5}
+df_comb <- df_comb %>% 
+  mutate(celltype_with_nbh = paste(cluster_var2, label2, sep = " &rarr; ")) %>% 
+  filter(!grepl("Ecad_neigh$|CD45_neigh$|CD45_CD3_[1-4]_neigh$", celltype_with_nbh))
+
+# Filter for significant differences
+df_filtered <- df_comb %>%
+  filter(p.value < 0.05 & abs(estimate) > 0.3)
+
+df_filtered <- df_filtered %>% filter (clinical_var=="mRss")
+
+# Order the factor levels for plotting
+df_filtered$celltype_with_nbh <- factor(
+  df_filtered$celltype_with_nbh,
+  levels = df_filtered$celltype_with_nbh[order(df_filtered$estimate)]
+)
+
+p <- ggplot(df_filtered, aes(x = estimate, y = celltype_with_nbh)) +
+  # Draw a segment from correlation=0 to the correlation value, just for a "lollipop" style
+  geom_segment(aes(x = 0, xend = estimate, y = celltype_with_nbh, yend = celltype_with_nbh),
+               color = "grey80") +
+  # Plot the points; color by p-value and size by absolute correlation
+  geom_point(aes(color = p.value, size = abs(estimate)), shape = 16) +
+  # Color scale: red for larger p-values, blue for smaller (adjust as you see fit)
+    scale_color_gradient(low = "red", high = "blue", limits = c(0.001, 0.05)) +
+  # Adjust point size range as desired
+  scale_size(range = c(2, 8)) +
+  # Nice minimal theme
+  theme_minimal(base_size = 14) +
+  # Axis labels, legend labels, etc.
+  labs(x = "Correlation",
+       y = NULL,
+       color = "p value",
+       size = "|cor coef|")  + 
+  theme(axis.text.y = ggtext::element_markdown(size = 14, color="black"),
+        title = element_text(size = 8),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.x = element_text(size = 10),color = "black")
+
+    plot(p)
+
+```
+
+# Plot one celltype - neighbour combination across several clincal outcomes {.tabset .tabset-pills}
+
+```{r plot across clinical, eval=TRUE, fig.width=5, fig.height=4, results='asis'}
+for(i in unique(df_comb2$celltype_with_nbh)){
+  df_comb_filtered <- df_comb2 %>% filter(celltype_with_nbh == i)
+df_comb_filtered$clinical_var <- factor(df_comb_filtered$clinical_var, levels = df_comb_filtered$clinical_var[order(df_comb_filtered$estimate)])
+
+p <- ggplot(df_comb_filtered, aes(x = estimate, y = clinical_var)) +
+  # Draw a segment from correlation=0 to the correlation value, just for a "lollipop" style
+  geom_segment(aes(x = 0, xend = estimate, y = clinical_var, yend = clinical_var),
+               color = "grey80") +
+  # Plot the points; color by p-value and size by absolute correlation
+  geom_point(aes(color = p.value, size = abs(estimate)), shape = 16) +
+  # Color scale: red for larger p-values, blue for smaller (adjust as you see fit)
+    scale_color_gradient(low = "red", high = "blue", limits = c(0.001, 0.05)) +
+  # Adjust point size range as desired
+  scale_size(range = c(2, 8)) +
+  # Nice minimal theme
+  theme_minimal(base_size = 14) +
+  # Axis labels, legend labels, etc.
+  labs(x = "Correlation",
+       y = NULL,
+       color = "p value",
+       size = "|cor coef|",
+       title = i)  + 
+  theme(axis.text.y = element_text(size = 12, color="black"),
+        title = element_text(size = 8),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.x = element_text(size = 10),color = "black")
+
+cat("## ", i, "\n\n")
+    plot(p)
+    cat("\n\n")
+
+}
+```
+
+# Plot one clinical outcome across several celltype - neighbour combinations {.tabset .tabset-pills}
+
+```{r plot across celltypes, eval=TRUE, fig.width=5, fig.height=4, results='asis'}
+
+list_df$mrss$label <- recode(
+  list_df$mrss$label,
+  "with_CD31_1_neigh" = "Met<sup>low</sup>_EC",
+  "with_CD31_2_neigh" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_EC",
+  "with_CD31_3_neigh" = "Met<sup>hi</sup>_EC",
+  "with_CD31_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "with_CD31_5_neigh" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "with_CD45_CD68_1_neigh" = "Met<sup>hi</sup>_Mf",
+  "with_CD45_CD68_2_neigh" = "Met<sup>low</sup>_Mf",
+  "with_CD45_CD68_3_neigh" = "Glycolysis<sup>low</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_CD45_CD68_4_neigh" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_stromal_1_neigh" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_2_neigh" = "Met<sup>hi</sup>_Fib",
+  "with_stromal_3_neigh" = "TCA/OXPHOS<sup>int</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "with_stromal_5_neigh" = "Met<sup>low</sup>_Fib",
+  "with_stromal_6_neigh" = "Glycolysis<sup>int</sup><br>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "with_stromal_7_neigh" = "Glut<sup>hi</sup>_Fib",
+  "with_stromal_8_neigh" = "Glycolysis<sup>int</sup><br>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+# Define a function to generate a lollipop plot for a given set of filter parameters
+plot_lollipop <- function(data, clinvar, clustervar, include_pattern, exclude_pattern, title_suffix = "") {
+  
+  # Combine the list of data frames into one and filter using the given parameters
+  df <- bind_rows(data) %>%
+    filter(clinical_var == clinvar,
+           cluster_var == clustervar,
+           !grepl(exclude_pattern, neigh_var),
+           grepl(include_pattern, neigh_var))
+  
+  # Order the factor levels for the y-axis based on the estimate values
+  df$label <- factor(df$label, 
+                                 levels = df$label[order(df$estimate)])
+  
+  # Create the ggplot object
+  p <- ggplot(df, aes(x = estimate, y = label)) +
+    geom_segment(aes(x = 0, xend = estimate, y = label, yend = label),
+                 color = "grey80") +
+    geom_point(aes(color = p.value, size = abs(estimate)), shape = 16) +
+    scale_color_gradient(low = "red", high = "blue", limits = c(0.001, 0.05)) +
+    scale_size(range = c(2, 8)) +
+    theme_minimal(base_size = 14) +
+    labs(x = "Correlation",
+         y = NULL,
+         color = "p value",
+         size = "|cor coef|",
+         title = paste("mRss", title_suffix)) +
+    theme(axis.text.y = ggtext::element_markdown(size = 10, color="black"),
+          title = element_text(size = 8),
+          legend.text = element_text(size = 10),
+          legend.title = element_text(size = 10),
+          axis.title.x = element_text(size = 10),color = "black")  
+  
+  return(p)
+}
+
+# Define the parameters for each plot in a list
+plot_params <- list(
+  list(clustervar = "stromal_2", include_pattern = "^has_str", 
+       exclude_pattern = "^has_CD45_CD3|^has_Ecad|^has_CD45_n", 
+       title_suffix = "- stromal_2, has_str"),
+  list(clustervar = "stromal_2", include_pattern = "^has_CD31", 
+       exclude_pattern = "^has_CD45_CD3|^has_Ecad|^has_CD45_n", 
+       title_suffix = "- stromal_2, has_CD31"),
+  list(clustervar = "stromal_4", include_pattern = "^has_str", 
+       exclude_pattern = "^has_CD45_CD3|^has_Ecad|^has_CD45_n", 
+       title_suffix = "- stromal_4, has_str"),
+  list(clustervar = "stromal_8", include_pattern = "^has_str", 
+       exclude_pattern = "^has_CD45_CD3|^has_Ecad|^has_CD45_n", 
+       title_suffix = "- stromal_8, has_str"),
+  list(clustervar = "stromal_8", include_pattern = "^has_CD45_CD68", 
+       exclude_pattern = "^has_CD45_CD3|^has_Ecad|^has_CD45_n", 
+       title_suffix = "- stromal_8, has_CD45_CD68")
+)
+
+# Generate the plots by applying the function to each set of parameters.
+# (Assuming your data is in the list `list_df`.)
+plots <- lapply(plot_params, function(params) {
+  plot_lollipop(data = list_df, 
+                clinvar = "current_mRSS", 
+                clustervar = params$clustervar,
+                include_pattern = params$include_pattern, 
+                exclude_pattern = params$exclude_pattern,
+                title_suffix = params$title_suffix)
+})
+
+counter <- 1
+# Display the plots (one after the other)
+for (p in plots) {
+  cat("## Plot ",counter, "\n\n")
+    plot(p)
+    counter <- counter + 1
+    cat("\n\n")
+}
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1.  Dot plots of correlations with clinical data. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

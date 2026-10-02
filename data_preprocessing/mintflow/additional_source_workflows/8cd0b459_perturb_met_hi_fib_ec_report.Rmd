@@ -1,0 +1,428 @@
+---
+title: "MintFlow Met_hi_Fib perturbation: EC response"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+source("data_preprocessing/common/config.R")
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(scales)
+library(sf)
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(knitr)
+library(patchwork)
+library(viridis)
+
+base_dir <- project_path("external/perturb_met_hi_fib_ec")
+sfe_path <- project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds")
+obs_path <- project_path("external/obs.csv")
+
+dir.create(file.path(base_dir, "r_plots"), showWarnings = FALSE, recursive = TRUE)
+
+theme_set(theme_bw(base_size = 12))
+theme_update(
+  panel.grid.minor = element_blank(),
+  strip.background = element_rect(fill = "grey92", colour = NA),
+  legend.position = "right"
+)
+
+scenario_levels <- c("baseline", "remove_Met_hi_Fib", "replace_Met_hi_Fib_with_Other_Fib")
+scenario_labels <- c(
+  baseline = "Baseline",
+  remove_Met_hi_Fib = "Remove Met_hi_Fib",
+  replace_Met_hi_Fib_with_Other_Fib = "Replace Met_hi_Fib with Other_Fib"
+)
+state_levels <- c("Met_hi_EC", "Met_int_EC")
+score_cols <- c("glycolysis_score", "tca_score", "hif1a_score", "nox4_score")
+
+cell_df <- read_csv(file.path(base_dir, "ec_cell_level_perturbation_results.csv"), show_col_types = FALSE) %>%
+  mutate(
+    scenario = factor(scenario, levels = scenario_levels, labels = scenario_labels),
+    predicted_ec_state = factor(predicted_ec_state, levels = state_levels),
+    metEClabel = factor(metEClabel, levels = state_levels)
+  )
+
+obs_df <- read_csv(obs_path, show_col_types = FALSE) %>%
+  mutate(
+    cell_id = as.character(cell_id),
+    combined_met_label = as.character(combined_met_label)
+  )
+
+write_plot <- function(plot, filename, width, height) {
+  pdf_path <- file.path(base_dir, "r_plots", paste0(filename, ".pdf"))
+  png_path <- file.path(base_dir, "r_plots", paste0(filename, ".png"))
+  ggsave(pdf_path, plot, width = width, height = height, limitsize = FALSE)
+  ggsave(png_path, plot, width = width, height = height, dpi = 250, limitsize = FALSE)
+  invisible(list(pdf = pdf_path, png = png_path))
+}
+
+fmt_p <- function(p) {
+  case_when(
+    is.na(p) ~ "NA",
+    p < 0.001 ~ "Mann-Whitney p < 0.001",
+    TRUE ~ paste0("Mann-Whitney p = ", sprintf("%.3f", p))
+  )
+}
+```
+
+## Inputs and Definitions
+
+This report is generated in R from the MintFlow perturbation outputs in:
+
+```{r input-paths}
+tibble(
+  input = c("cell-level perturbation CSV", "training-cell metadata CSV", "SFE with cell boundaries"),
+  path = c(
+    file.path(base_dir, "ec_cell_level_perturbation_results.csv"),
+    obs_path,
+    sfe_path
+  )
+) %>% kable()
+```
+
+The perturbations are:
+
+- `Remove Met_hi_Fib`: remove all cells labelled `Met_hi_Fib` from the in silico tissue.
+- `Replace Met_hi_Fib with Other_Fib`: keep the cells but relabel `Met_hi_Fib` as `Other_Fib`.
+
+EC-state frequencies are computed per sample as the fraction of ECs classified as `Met_hi_EC` or `Met_int_EC` by the baseline-generated-expression EC-state classifier. The statistical tests below use an unpaired Mann-Whitney test, as requested.
+
+## EC-State Frequencies per Sample
+
+```{r frequency-data}
+sample_totals <- cell_df %>%
+  dplyr::count(scenario, sample_id, name = "n_ec_total")
+
+sample_freq <- cell_df %>%
+  dplyr::count(scenario, sample_id, predicted_ec_state, name = "n_ec_state") %>%
+  complete(
+    nesting(scenario, sample_id),
+    predicted_ec_state = factor(state_levels, levels = state_levels),
+    fill = list(n_ec_state = 0)
+  ) %>%
+  left_join(sample_totals, by = c("scenario", "sample_id")) %>%
+  mutate(freq = n_ec_state / n_ec_total)
+
+make_pair <- function(target_scenario, comparison_label) {
+  sample_freq %>%
+    filter(as.character(scenario) %in% c("Baseline", target_scenario)) %>%
+    mutate(
+      comparison = comparison_label,
+      scenario_pair = factor(as.character(scenario), levels = c("Baseline", target_scenario))
+    )
+}
+
+freq_pair <- bind_rows(
+  make_pair("Remove Met_hi_Fib", "Baseline vs remove"),
+  make_pair("Replace Met_hi_Fib with Other_Fib", "Baseline vs replace")
+)
+
+freq_tests <- freq_pair %>%
+  group_by(comparison, predicted_ec_state) %>%
+  summarise(
+    p_value = tryCatch(wilcox.test(freq ~ scenario_pair, exact = FALSE)$p.value, error = function(e) NA_real_),
+    y = min(1.06, max(freq, na.rm = TRUE) + 0.12),
+    .groups = "drop"
+  ) %>%
+  mutate(label = fmt_p(p_value), x = 1.5)
+
+freq_summary <- sample_freq %>%
+  group_by(scenario, predicted_ec_state) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    mean_freq = mean(freq),
+    median_freq = median(freq),
+    min_freq = min(freq),
+    max_freq = max(freq),
+    .groups = "drop"
+  )
+
+freq_summary %>% kable(digits = 3)
+```
+
+```{r frequency-plot, fig.width=12, fig.height=6.8}
+p_freq <- ggplot(freq_pair, aes(x = scenario_pair, y = freq)) +
+  geom_point(
+    aes(colour = sample_id),
+    position = position_jitter(width = 0.08, height = 0),
+    size = 2.5,
+    alpha = 0.9
+  ) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.45, fatten = 0, colour = "black") +
+  geom_text(
+    data = freq_tests,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    size = 3.2
+  ) +
+  facet_grid(predicted_ec_state ~ comparison) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1.1)) +
+  labs(
+    x = NULL,
+    y = "Frequency among ECs",
+    colour = "Sample",
+    title = "EC-state frequencies per sample after Met_hi_Fib perturbation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "bottom",
+    legend.text = element_text(size = 8)
+  )
+p_freq
+write_plot(p_freq, "r_sample_level_ec_state_frequencies_mann_whitney", 12, 6.8)
+```
+
+## Metabolic Scores among ECs
+
+```{r score-data}
+sample_scores <- cell_df %>%
+  group_by(scenario, sample_id) %>%
+  summarise(across(all_of(score_cols), mean, na.rm = TRUE), .groups = "drop") %>%
+  pivot_longer(all_of(score_cols), names_to = "score", values_to = "value")
+
+make_score_pair <- function(target_scenario, comparison_label) {
+  sample_scores %>%
+    filter(as.character(scenario) %in% c("Baseline", target_scenario)) %>%
+    mutate(
+      comparison = comparison_label,
+      scenario_pair = factor(as.character(scenario), levels = c("Baseline", target_scenario))
+    )
+}
+
+score_pair <- bind_rows(
+  make_score_pair("Remove Met_hi_Fib", "Baseline vs remove"),
+  make_score_pair("Replace Met_hi_Fib with Other_Fib", "Baseline vs replace")
+)
+
+score_tests <- score_pair %>%
+  group_by(comparison, score) %>%
+  summarise(
+    p_value = tryCatch(wilcox.test(value ~ scenario_pair, exact = FALSE)$p.value, error = function(e) NA_real_),
+    y = max(value, na.rm = TRUE) + 0.12,
+    .groups = "drop"
+  ) %>%
+  mutate(label = fmt_p(p_value), x = 1.5)
+
+sample_scores %>%
+  group_by(scenario, score) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    mean = mean(value),
+    median = median(value),
+    .groups = "drop"
+  ) %>%
+  kable(digits = 3)
+```
+
+```{r score-plot, fig.width=13, fig.height=8}
+p_scores <- ggplot(score_pair, aes(x = scenario_pair, y = value)) +
+  geom_point(
+    aes(colour = sample_id),
+    position = position_jitter(width = 0.08, height = 0),
+    size = 2.3,
+    alpha = 0.9
+  ) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.45, fatten = 0, colour = "black") +
+  geom_text(
+    data = score_tests,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  facet_grid(score ~ comparison, scales = "free_y") +
+  labs(
+    x = NULL,
+    y = "Mean log1p generated Xmic score per sample",
+    colour = "Sample",
+    title = "EC metabolic scores per sample"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "bottom",
+    legend.text = element_text(size = 8)
+  )
+p_scores
+write_plot(p_scores, "r_sample_level_ec_metabolic_scores_mann_whitney", 13, 8)
+```
+
+## Tissue Maps using Cell Boundaries
+
+```{r load-boundaries, message=FALSE, warning=FALSE}
+sfe <- readRDS(sfe_path)
+geometry_names <- colGeometryNames(sfe)
+use_boundaries <- "cellSeg" %in% geometry_names
+
+if (use_boundaries) {
+  boundary_geom <- st_as_sf(colGeometry(sfe, "cellSeg"))
+  boundary_geom$cell_id <- rownames(boundary_geom)
+  geometry_source <- "cellSeg polygons where available; centroids only for cells without cellSeg polygons"
+} else {
+  boundary_geom <- st_sf(cell_id = character(), geometry = st_sfc(crs = NA))
+  geometry_source <- "centroid points only; no cellSeg polygons found"
+}
+
+centroid_geom <- st_as_sf(colGeometry(sfe, "centroids"))
+centroid_geom$cell_id <- rownames(centroid_geom)
+if (all(is.na(centroid_geom$cell_id)) || any(centroid_geom$cell_id == "")) {
+  centroid_geom$cell_id <- colnames(sfe)[seq_len(nrow(centroid_geom))]
+}
+
+map_base_boundary <- boundary_geom %>%
+  inner_join(obs_df %>% select(cell_id, combined_met_label), by = "cell_id")
+
+missing_boundary_ids <- setdiff(obs_df$cell_id, map_base_boundary$cell_id)
+map_base_centroid <- centroid_geom %>%
+  semi_join(tibble(cell_id = missing_boundary_ids), by = "cell_id") %>%
+  inner_join(obs_df %>% select(cell_id, combined_met_label), by = "cell_id")
+
+make_map_labels <- function(map_base) {
+  bind_rows(
+    map_base %>% mutate(scenario = "Baseline", map_label = combined_met_label),
+    map_base %>%
+      filter(combined_met_label != "Met_hi_Fib") %>%
+      mutate(scenario = "Remove Met_hi_Fib", map_label = combined_met_label),
+    map_base %>%
+      mutate(
+        scenario = "Replace Met_hi_Fib with Other_Fib",
+        map_label = if_else(combined_met_label == "Met_hi_Fib", "Other_Fib", combined_met_label)
+      )
+  ) %>%
+    mutate(
+      scenario = factor(scenario, levels = unname(scenario_labels)),
+      map_label = factor(map_label, levels = c("Met_hi_Fib", "Other_Fib", "Met_hi_EC", "Met_int_EC"))
+    )
+}
+
+map_labels_boundary <- make_map_labels(map_base_boundary)
+map_labels_centroid <- make_map_labels(map_base_centroid)
+
+ec_meta <- cell_df %>%
+  mutate(scenario = as.character(scenario)) %>%
+  select(cell_id, scenario, metEClabel, predicted_ec_state, prob_Met_hi_EC)
+
+ec_prob_sf_boundary <- boundary_geom %>%
+  inner_join(ec_meta, by = "cell_id") %>%
+  mutate(
+    scenario = factor(scenario, levels = unname(scenario_labels)),
+    metEClabel = factor(metEClabel, levels = state_levels)
+  )
+
+ec_missing_boundary_ids <- setdiff(ec_meta$cell_id, ec_prob_sf_boundary$cell_id)
+ec_prob_sf_centroid <- centroid_geom %>%
+  semi_join(tibble(cell_id = ec_missing_boundary_ids), by = "cell_id") %>%
+  inner_join(ec_meta, by = "cell_id") %>%
+  mutate(
+    scenario = factor(scenario, levels = unname(scenario_labels)),
+    metEClabel = factor(metEClabel, levels = state_levels)
+  )
+
+tibble(
+  geometry_used = geometry_source,
+  training_cells_with_boundaries = n_distinct(map_base_boundary$cell_id),
+  training_cells_with_centroid_fallback = n_distinct(map_base_centroid$cell_id),
+  ec_cells_with_boundaries = n_distinct(ec_prob_sf_boundary$cell_id),
+  ec_cells_with_centroid_fallback = n_distinct(ec_prob_sf_centroid$cell_id)
+) %>%
+  kable()
+```
+
+```{r celltype-map, fig.width=16, fig.height=6}
+label_cols <- c(
+  Met_hi_Fib = "#c0392b",
+  Other_Fib = "#7f8c8d",
+  Met_hi_EC = "#2166ac",
+  Met_int_EC = "#1b9e77"
+)
+
+p_map_labels <- ggplot() +
+  geom_sf(data = map_labels_boundary, aes(fill = map_label), colour = NA, alpha = 0.9) +
+  geom_sf(data = map_labels_centroid, aes(colour = map_label), size = 0.22, alpha = 0.7) +
+  facet_wrap(~scenario, nrow = 1) +
+  scale_fill_manual(values = label_cols, na.value = "grey85", drop = FALSE) +
+  scale_colour_manual(values = label_cols, guide = "none", na.value = "grey70", drop = FALSE) +
+  coord_sf(datum = NA) +
+  scale_y_reverse() +
+  labs(
+    title = "In silico tissue layouts after perturbation",
+    subtitle = geometry_source,
+    fill = "Cell label"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+p_map_labels
+write_plot(p_map_labels, "r_tissue_map_cell_boundaries_celltype", 16, 6)
+```
+
+```{r ec-probability-map, fig.width=16, fig.height=6}
+p_map_prob <- ggplot() +
+  geom_sf(data = map_base_boundary, fill = "grey92", colour = NA, alpha = 0.35) +
+  geom_sf(data = map_base_centroid, colour = "grey78", size = 0.12, alpha = 0.3) +
+  geom_sf(data = ec_prob_sf_boundary, aes(fill = prob_Met_hi_EC), colour = NA, alpha = 0.95) +
+  geom_sf(data = ec_prob_sf_centroid, aes(colour = prob_Met_hi_EC), size = 0.55, alpha = 0.95) +
+  facet_wrap(~scenario, nrow = 1) +
+  scale_fill_viridis_c(option = "magma", limits = c(0, 1), name = "P(Met_hi_EC)") +
+  scale_colour_viridis_c(option = "magma", limits = c(0, 1), guide = "none") +
+  coord_sf(datum = NA) +
+  scale_y_reverse() +
+  labs(
+    title = "Generated EC Met_hi_EC probability after perturbation",
+    subtitle = geometry_source
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+p_map_prob
+write_plot(p_map_prob, "r_tissue_map_cell_boundaries_ec_probability", 16, 6)
+```
+
+```{r ec-probability-map-by-population, fig.width=16, fig.height=8}
+p_map_prob_by_pop <- ggplot() +
+  geom_sf(data = map_base_boundary, fill = "grey94", colour = NA, alpha = 0.25) +
+  geom_sf(data = map_base_centroid, colour = "grey82", size = 0.1, alpha = 0.25) +
+  geom_sf(data = ec_prob_sf_boundary, aes(fill = prob_Met_hi_EC), colour = NA, alpha = 0.95) +
+  geom_sf(data = ec_prob_sf_centroid, aes(colour = prob_Met_hi_EC), size = 0.55, alpha = 0.95) +
+  facet_grid(metEClabel ~ scenario) +
+  scale_fill_viridis_c(option = "magma", limits = c(0, 1), name = "P(Met_hi_EC)") +
+  scale_colour_viridis_c(option = "magma", limits = c(0, 1), guide = "none") +
+  coord_sf(datum = NA) +
+  scale_y_reverse() +
+  labs(
+    title = "Generated EC Met_hi_EC probability by original EC population",
+    subtitle = geometry_source
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+p_map_prob_by_pop
+write_plot(p_map_prob_by_pop, "r_tissue_map_cell_boundaries_ec_probability_by_population", 16, 8)
+```
+
+## Exported Files
+
+```{r exported-files}
+tibble(
+  file = list.files(file.path(base_dir, "r_plots"), pattern = "\\.(pdf|png)$", full.names = TRUE)
+) %>%
+  mutate(file = basename(file)) %>%
+  arrange(file) %>%
+  kable()
+```

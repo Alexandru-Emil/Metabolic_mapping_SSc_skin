@@ -1,0 +1,467 @@
+---
+title: "First-cohort metabolic interactions: total and local mRSS"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    code_folding: hide
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center", dpi = 180)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggtext)
+  library(patchwork)
+  library(scales)
+  library(knitr)
+})
+source("first_cohort_mrss_common.R")
+
+output_dir <- file.path(getwd(), "first_cohort_total_local_mRSS_interaction_outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Scope
+
+This report has three deliberately separate aims:
+
+1. Reproduce the five originally selected interaction panels using current total mRSS.
+2. Apply the same selections to local mRSS.
+3. Rank all 136 annotated fibroblast-to-metabolic-cluster interactions by their local-mRSS Spearman correlation and visualize the strongest associations.
+
+Every interaction frequency is calculated per donor as a percentage of all stromal cells. The ranking universe contains eight fibroblast base clusters crossed with eight fibroblast, five endothelial, and four macrophage metabolic neighbor clusters. Generic overlapping flags such as `has_CD45_neigh` are not mixed into this ranking.
+
+## Superscript audit
+
+The labels are generated from one validated mapping. The state words `hi`, `int`, and `low` are represented consistently by the Unicode superscripts `r superscript_state["hi"]`, `r superscript_state["int"]`, and `r superscript_state["low"]`. This avoids the broken HTML and alpha encoding present in the archived source while remaining vector-safe.
+
+```{r label-audit, echo=FALSE}
+kable(label_audit, caption = "Validated metabolic-cluster labels used throughout the report")
+```
+
+## Data preparation
+
+```{r prepare-data}
+inputs <- load_first_cohort_mrss_data()
+clinical <- inputs$clinical
+
+base_clusters <- paste0("stromal_", 1:8)
+neighbor_clusters <- c(
+  paste0("stromal_", 1:8),
+  paste0("CD31_", 1:5),
+  paste0("CD45_CD68_", 1:4)
+)
+
+all_definitions <- crossing(
+  base_cluster = base_clusters,
+  neighbor_cluster = neighbor_clusters
+) %>%
+  mutate(
+    neighbor_variable = paste0("has_", neighbor_cluster, "_neigh"),
+    positive_neighbor_value = paste0("with_", neighbor_cluster, "_neigh"),
+    base_label = unname(cluster_labels[base_cluster]),
+    neighbor_label = unname(cluster_labels[neighbor_cluster]),
+    base_label_html = unname(cluster_labels_html[base_cluster]),
+    neighbor_label_html = unname(cluster_labels_html[neighbor_cluster]),
+    interaction_label = paste0(
+      unname(cluster_labels_single_line[base_cluster]),
+      " \u2192 ",
+      unname(cluster_labels_single_line[neighbor_cluster])
+    ),
+    interaction_label_html = paste0(
+      unname(cluster_labels_html_single_line[base_cluster]),
+      " &#8594; ",
+      unname(cluster_labels_html_single_line[neighbor_cluster])
+    )
+  )
+
+panel_definitions <- bind_rows(
+  tibble(panel = "A", neighbor_type = "fibroblast", base_cluster = "stromal_2", neighbor_cluster = paste0("stromal_", 1:8)),
+  tibble(panel = "B", neighbor_type = "endothelial", base_cluster = "stromal_2", neighbor_cluster = paste0("CD31_", 1:5)),
+  tibble(panel = "C", neighbor_type = "fibroblast", base_cluster = "stromal_4", neighbor_cluster = paste0("stromal_", 1:8)),
+  tibble(panel = "D", neighbor_type = "fibroblast", base_cluster = "stromal_8", neighbor_cluster = paste0("stromal_", 1:8)),
+  tibble(panel = "E", neighbor_type = "macrophage", base_cluster = "stromal_8", neighbor_cluster = paste0("CD45_CD68_", 1:4))
+)
+
+needed_neighbor_variables <- unique(all_definitions$neighbor_variable)
+stopifnot(all(needed_neighbor_variables %in% names(inputs$neighbor_data)))
+
+analysis_cells <- bind_cols(
+  inputs$cell_data,
+  inputs$neighbor_data[, needed_neighbor_variables, drop = FALSE]
+) %>%
+  filter(indication == "SSc", celltype == "Stromal")
+
+stromal_denominators <- analysis_cells %>%
+  dplyr::count(patient_id, name = "stromal_denominator")
+
+interaction_frequencies <- lapply(seq_len(nrow(all_definitions)), function(i) {
+  definition <- all_definitions[i, ]
+  analysis_cells %>%
+    mutate(
+      is_target = metabolic_cluster == definition$base_cluster &
+        .data[[definition$neighbor_variable]] == definition$positive_neighbor_value
+    ) %>%
+    group_by(patient_id) %>%
+    summarise(target_cells = sum(is_target, na.rm = TRUE), .groups = "drop") %>%
+    right_join(stromal_denominators, by = "patient_id") %>%
+    mutate(
+      target_cells = replace_na(target_cells, 0L),
+      frequency_percent = 100 * target_cells / stromal_denominator,
+      base_cluster = definition$base_cluster,
+      neighbor_cluster = definition$neighbor_cluster,
+      base_label = definition$base_label,
+      neighbor_label = definition$neighbor_label,
+      base_label_html = definition$base_label_html,
+      neighbor_label_html = definition$neighbor_label_html,
+      interaction_label = definition$interaction_label,
+      interaction_label_html = definition$interaction_label_html
+    )
+}) %>%
+  bind_rows() %>%
+  left_join(clinical, by = "patient_id")
+
+write.csv(
+  interaction_frequencies,
+  file.path(output_dir, "all_136_donor_level_interaction_frequencies.csv"),
+  row.names = FALSE
+)
+```
+
+## Correlation audit
+
+```{r calculate-correlations}
+all_current_stats <- summarise_correlations(
+  interaction_frequencies,
+  score_variable = "current_mRSS",
+  group_variables = c(
+    "base_cluster", "neighbor_cluster", "base_label", "neighbor_label",
+    "base_label_html", "neighbor_label_html", "interaction_label", "interaction_label_html"
+  )
+) %>%
+  mutate(q_BH_136_tests = p.adjust(p_spearman_raw, method = "BH"))
+
+all_local_stats <- summarise_correlations(
+  interaction_frequencies,
+  score_variable = "local_mRSS",
+  group_variables = c(
+    "base_cluster", "neighbor_cluster", "base_label", "neighbor_label",
+    "base_label_html", "neighbor_label_html", "interaction_label", "interaction_label_html"
+  ),
+  exact_binary = TRUE
+) %>%
+  mutate(q_BH_136_tests = p.adjust(p_spearman_raw, method = "BH"))
+
+selected_current_stats <- panel_definitions %>%
+  left_join(all_current_stats, by = c("base_cluster", "neighbor_cluster"))
+
+selected_local_stats <- panel_definitions %>%
+  left_join(all_local_stats, by = c("base_cluster", "neighbor_cluster")) %>%
+  group_by(panel) %>%
+  mutate(q_BH_within_original_panel = p.adjust(p_spearman_raw, method = "BH")) %>%
+  ungroup()
+
+write.csv(all_current_stats, file.path(output_dir, "all_136_current_mRSS_interaction_correlations.csv"), row.names = FALSE)
+write.csv(all_local_stats, file.path(output_dir, "all_136_local_mRSS_interaction_correlations.csv"), row.names = FALSE)
+write.csv(selected_current_stats, file.path(output_dir, "original_panels_current_mRSS_results.csv"), row.names = FALSE)
+write.csv(selected_local_stats, file.path(output_dir, "original_panels_local_mRSS_results.csv"), row.names = FALSE)
+
+# Verify the 33 originally selected total-mRSS correlations against the archived table.
+archived_path <- project_path("IMC_metabolic_analysis_AEM/Datasets/cor_mrss_hasneigh.csv")
+archived <- read.csv(archived_path, check.names = TRUE) %>%
+  transmute(
+    base_cluster = cluster_var,
+    neighbor_cluster = sub("^with_(.*)_neigh$", "\\1", label),
+    archived_rho = estimate,
+    archived_p = p.value
+  )
+
+reproduction_check <- selected_current_stats %>%
+  left_join(archived, by = c("base_cluster", "neighbor_cluster")) %>%
+  mutate(
+    rho_absolute_difference = abs(rho - archived_rho),
+    p_absolute_difference = abs(p_spearman_raw - archived_p)
+  )
+
+write.csv(reproduction_check, file.path(output_dir, "archived_total_mRSS_reproduction_check_33.csv"), row.names = FALSE)
+stopifnot(
+  max(reproduction_check$rho_absolute_difference, na.rm = TRUE) < 1e-12,
+  max(reproduction_check$p_absolute_difference, na.rm = TRUE) < 1e-12
+)
+```
+
+All 33 originally selected total-mRSS correlations reproduce the archived estimates and p-values to within `1e-12`.
+
+## Original panels: total mRSS
+
+```{r selected-panel-function}
+make_selected_panel <- function(panel_id, score = c("current", "local"), show_legend = TRUE) {
+  score <- match.arg(score)
+  results <- if (score == "current") selected_current_stats else selected_local_stats
+  plot_data <- results %>%
+    filter(panel == panel_id) %>%
+    arrange(rho) %>%
+    mutate(neighbor_label_html = factor(neighbor_label_html, levels = neighbor_label_html))
+
+  base_title <- unname(cluster_labels_html_single_line[unique(plot_data$base_cluster)])
+  score_title <- if (score == "current") "current total mRSS" else "local mRSS"
+  neighbor_type <- unique(plot_data$neighbor_type)
+
+  p <- ggplot(plot_data, aes(x = rho, y = neighbor_label_html)) +
+    geom_vline(xintercept = 0, linewidth = 0.35, color = "grey72") +
+    geom_segment(aes(x = 0, xend = rho, yend = neighbor_label_html), linewidth = 0.55, color = "grey75") +
+    geom_point(aes(size = abs(rho), color = p_spearman_raw)) +
+    scale_color_gradient(
+      name = "p value",
+      low = "red",
+      high = "blue",
+      limits = c(0.001, 0.05),
+      breaks = c(0.01, 0.02, 0.03, 0.04, 0.05),
+      labels = number_format(accuracy = 0.01),
+      na.value = "grey52"
+    ) +
+    scale_size_continuous(
+      name = "|cor coef|",
+      range = c(2.4, 8.2),
+      limits = c(0, 1),
+      breaks = c(0.2, 0.4, 0.6, 0.8)
+    ) +
+    scale_x_continuous(
+      breaks = pretty_breaks(n = 3),
+      labels = number_format(accuracy = 0.1),
+      expand = expansion(mult = c(0.08, 0.08)),
+      guide = guide_axis(check.overlap = TRUE)
+    ) +
+    labs(
+      title = base_title,
+      subtitle = paste(score_title, "|", neighbor_type, "neighbors"),
+      x = "Spearman correlation",
+      y = NULL
+    ) +
+    theme_bw(base_size = 13) +
+    theme(
+      plot.title = ggtext::element_markdown(size = 14, hjust = 0.5, margin = margin(b = 3)),
+      plot.subtitle = element_text(size = 12.5, hjust = 0.5, margin = margin(b = 8)),
+      axis.text.x = element_text(size = 11, color = "grey20"),
+      axis.text.y = ggtext::element_markdown(size = 12, color = "grey20", lineheight = 0.92),
+      axis.title.x = element_text(size = 12),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_line(color = "grey86", linewidth = 0.45),
+      panel.grid.major.x = element_line(color = "grey92", linewidth = 0.4),
+      legend.title = element_text(size = 11),
+      legend.text = element_text(size = 10),
+      plot.margin = margin(8, 8, 8, 8)
+    ) +
+    guides(
+      color = guide_colorbar(order = 1, barheight = unit(2.5, "cm"), barwidth = unit(0.38, "cm")),
+      size = guide_legend(order = 2, override.aes = list(color = "black"))
+    )
+
+  if (!show_legend) p <- p + theme(legend.position = "none")
+  p
+}
+
+current_panels <- setNames(lapply(LETTERS[1:5], make_selected_panel, score = "current"), LETTERS[1:5])
+local_panels <- setNames(lapply(LETTERS[1:5], make_selected_panel, score = "local"), LETTERS[1:5])
+
+panel_sizes <- list(A = c(8, 5.6), B = c(8, 4.8), C = c(8, 5.6), D = c(8, 5.6), E = c(8, 4.8))
+for (panel_id in LETTERS[1:5]) {
+  dims <- panel_sizes[[panel_id]]
+  save_vector_and_png(
+    current_panels[[panel_id]],
+    file.path(output_dir, paste0("original_panel_", panel_id, "_current_total_mRSS")),
+    dims[1], dims[2]
+  )
+  save_vector_and_png(
+    local_panels[[panel_id]],
+    file.path(output_dir, paste0("original_panel_", panel_id, "_local_mRSS")),
+    dims[1], dims[2]
+  )
+}
+
+combine_five_panels <- function(plot_list) {
+  (plot_list$A + plot_list$B + plot_list$C + plot_list$D + plot_list$E) +
+    plot_layout(design = "\nAABB\n#CC#\nDDEE\n") +
+    plot_annotation(tag_levels = "A") &
+    theme(plot.tag = element_text(size = 22, face = "bold"))
+}
+
+combined_current <- combine_five_panels(current_panels)
+combined_local <- combine_five_panels(local_panels)
+
+save_vector_and_png(combined_current, file.path(output_dir, "combined_original_interactions_current_total_mRSS"), 12.5, 16)
+save_vector_and_png(combined_local, file.path(output_dir, "combined_original_interactions_local_mRSS"), 12.5, 16)
+```
+
+```{r show-current-panels, echo=FALSE, fig.width=10, fig.height=12.8}
+combined_current
+```
+
+## Same panels: local mRSS
+
+```{r show-local-panels, echo=FALSE, fig.width=10, fig.height=12.8}
+combined_local
+```
+
+## Strongest local-mRSS interactions
+
+The ranking below is exploratory. Associations were ranked by absolute Spearman correlation across all 136 annotated interactions; statistical correction is nevertheless performed across the full 136-test universe.
+
+```{r top-local-interactions}
+top_local_interactions <- all_local_stats %>%
+  arrange(desc(abs(rho)), p_spearman_raw) %>%
+  slice_head(n = 10) %>%
+  mutate(interaction_label_html = factor(interaction_label_html, levels = rev(interaction_label_html)))
+
+write.csv(
+  top_local_interactions,
+  file.path(output_dir, "top_10_local_mRSS_interactions_by_absolute_rho.csv"),
+  row.names = FALSE
+)
+
+top_interaction_lollipop <- ggplot(
+  top_local_interactions,
+  aes(x = rho, y = interaction_label_html)
+) +
+  geom_vline(xintercept = 0, color = "grey72", linewidth = 0.4) +
+  geom_segment(aes(x = 0, xend = rho, yend = interaction_label_html), color = "grey73", linewidth = 0.65) +
+  geom_point(aes(size = abs(rho), color = p_spearman_raw)) +
+  scale_color_gradient(
+    name = "Raw p value",
+    low = "red",
+    high = "blue",
+    limits = c(0.001, 0.05),
+    oob = scales::censor,
+    na.value = "grey52"
+  ) +
+  scale_size_continuous(
+    name = "|Spearman \u03c1|",
+    range = c(4, 10),
+    limits = c(0, 1),
+    breaks = c(0.5, 0.7, 0.9)
+  ) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), expand = expansion(mult = c(0, 0.04))) +
+  labs(
+    title = "Strongest local-mRSS interaction correlations",
+    subtitle = "Top 10 of 136 ranked by absolute Spearman correlation",
+    x = "Spearman correlation",
+    y = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title = element_text(size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.y = ggtext::element_markdown(size = 11, lineheight = 0.95),
+    axis.text.x = element_text(size = 11),
+    axis.title.x = element_text(size = 12),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(8, 12, 8, 8)
+  )
+
+save_vector_and_png(
+  top_interaction_lollipop,
+  file.path(output_dir, "top_10_local_mRSS_interactions_lollipop"),
+  10.5, 7.2
+)
+```
+
+```{r show-top-lollipop, echo=FALSE, fig.width=10.5, fig.height=7.2}
+top_interaction_lollipop
+```
+
+### Donor-level views of the top three
+
+```{r top-three-donor-plots}
+top_three <- top_local_interactions %>%
+  arrange(desc(abs(rho))) %>%
+  slice_head(n = 3) %>%
+  mutate(rank = row_number())
+
+make_top_interaction_detail <- function(rank_value) {
+  definition <- top_three %>% filter(rank == rank_value)
+  plot_data <- interaction_frequencies %>%
+    filter(
+      base_cluster == definition$base_cluster,
+      neighbor_cluster == definition$neighbor_cluster,
+      !is.na(local_mRSS)
+    ) %>%
+    mutate(local_mRSS_group = factor(local_mRSS, levels = c(1, 2)))
+
+  annotation <- paste0(
+    "\u03c1 = ", sprintf("%.2f", definition$rho),
+    ", raw p = ", format_p(definition$p_spearman_raw),
+    "\nexact p = ", format_p(definition$p_exact_permutation),
+    ", BH q = ", format_p(definition$q_BH_136_tests)
+  )
+
+  ggplot(plot_data, aes(x = local_mRSS_group, y = frequency_percent, fill = local_mRSS_group)) +
+    geom_boxplot(width = 0.5, outlier.shape = NA, linewidth = 0.65, alpha = 0.65) +
+    geom_jitter(width = 0.08, height = 0, shape = 21, size = 3.1, stroke = 0.65, color = "black") +
+    annotate("text", x = 1.02, y = max(plot_data$frequency_percent) * 1.13,
+             label = annotation, hjust = 0, vjust = 1, size = 3.7) +
+    scale_fill_manual(values = c("1" = "#C9D8E8", "2" = "#EFA19A"), guide = "none") +
+    scale_y_continuous(expand = expansion(mult = c(0.03, 0.20))) +
+    labs(
+      title = definition$interaction_label_html,
+      x = "Local mRSS",
+      y = "% of all fibroblasts"
+    ) +
+    theme_classic(base_size = 13) +
+    theme(
+      plot.title = ggtext::element_markdown(size = 12.5, hjust = 0.5, margin = margin(b = 8)),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 11, color = "black"),
+      plot.margin = margin(10, 10, 8, 10)
+    )
+}
+
+top_detail_plots <- setNames(lapply(1:3, make_top_interaction_detail), paste0("rank", 1:3))
+for (i in 1:3) {
+  save_vector_and_png(
+    top_detail_plots[[i]],
+    file.path(output_dir, paste0("top_local_interaction_rank_", i, "_donor_level")),
+    5.2, 4.2
+  )
+}
+
+combined_top_details <- top_detail_plots$rank1 + top_detail_plots$rank2 + top_detail_plots$rank3 +
+  plot_layout(ncol = 3) + plot_annotation(tag_levels = "A")
+save_vector_and_png(
+  combined_top_details,
+  file.path(output_dir, "top_3_local_mRSS_interactions_donor_level_combined"),
+  15.6, 4.4
+)
+```
+
+```{r show-top-details, echo=FALSE, fig.width=15.6, fig.height=4.4}
+combined_top_details
+```
+
+## Statistical tables
+
+```{r top-table, echo=FALSE}
+kable(
+  top_local_interactions %>%
+    select(interaction_label, n_donors, rho, p_spearman_raw, p_exact_permutation, q_BH_136_tests),
+  digits = 4,
+  caption = "Ten strongest local-mRSS interactions by absolute Spearman correlation"
+)
+```
+
+## Interpretation
+
+- The current-total-mRSS panels are prespecified reproductions of the archived figure.
+- The local-mRSS ranking is explicitly exploratory and uses one donor as one observation.
+- Local mRSS is available for eight donors and takes only the values 1 and 2. Exact permutation p-values enumerate all 56 possible allocations of the three score-2 labels.
+- BH q-values account for all 136 annotated interactions, not only the displayed top ten.
+- A high local-mRSS correlation can therefore be visually strong while remaining uncertain after multiplicity correction.
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,124 @@
+---
+title: "Crossed EC-fibroblast Seahorse statistical reanalysis"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    self_contained: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(knitr)
+
+out_dir <- file.path(getwd(), "seahorse_crossed_design_analysis")
+results <- read.csv(file.path(out_dir, "statistical_results_all_endpoints.csv"),
+                    check.names = FALSE)
+dat <- read.csv(file.path(out_dir, "seahorse_analysis_dataset.csv"),
+                check.names = FALSE)
+
+displayed <- c("baseline_ocr", "atp_linked", "maximal_ocr")
+current_p <- c(baseline_ocr = 0.0246, atp_linked = 0.0294, maximal_ocr = 0.0106)
+
+fmt_p <- function(x) {
+  ifelse(is.na(x), NA_character_,
+         ifelse(x < 0.001, "<0.001", formatC(x, format = "f", digits = 4)))
+}
+```
+
+## Recommendation
+
+The 27 EC-fibroblast combinations are not 27 independent biological donors. Disease condition is a property of the fibroblast donor (3 healthy and 6 progressive SSc donors), and each fibroblast line was tested repeatedly in the same three EC lines. The primary analysis is therefore a repeated-measures linear mixed model:
+
+`outcome ~ fibroblast condition + EC line + (1 | fibroblast donor)`
+
+EC line is included as a fixed blocking factor because only three specific EC lines were studied. Fibroblast donor is a random intercept. A condition-by-EC-line interaction was tested first and was not supported for any displayed endpoint. Two-sided Kenward-Roger tests provide small-sample inference across the ten fibroblast donors. An exact donor-label permutation test is reported as a distribution-light sensitivity analysis; it preserves each donor's observed EC-line measurements and adjusts for EC line.
+
+## Primary results
+
+```{r primary-table, echo=FALSE}
+primary_table <- results %>%
+  filter(endpoint %in% displayed) %>%
+  mutate(
+    `Current figure P` = unname(current_p[endpoint]),
+    `Healthy adjusted mean` = healthy_adjusted_mean,
+    `Progressive SSc adjusted mean` = ssc_adjusted_mean,
+    `Difference (SSc - healthy)` = estimate_ssc_minus_healthy,
+    `95% CI` = sprintf("%.2f to %.2f", ci_low, ci_high),
+    `Mixed-model P` = fmt_p(lmm_kenward_roger_p),
+    `Holm P (3 endpoints)` = fmt_p(holm_p_three_displayed),
+    `Exact donor permutation P` = fmt_p(donor_exact_permutation_p),
+    `Condition x EC P` = fmt_p(condition_by_ec_interaction_p)
+  ) %>%
+  select(
+    Endpoint = label,
+    `Healthy adjusted mean`, `Progressive SSc adjusted mean`,
+    `Difference (SSc - healthy)`, `95% CI`,
+    `Mixed-model P`, `Holm P (3 endpoints)`,
+    `Exact donor permutation P`, `Condition x EC P`, `Current figure P`
+  )
+
+primary_table %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  kable(align = c("l", rep("r", ncol(primary_table) - 1)))
+```
+
+On the raw OCR-derived values, progressive-SSc conditioned medium was associated with higher basal OCR (estimated difference 3.15, 95% CI 1.10 to 5.21; mixed-model P=0.0074) and maximal OCR (difference 5.43, 95% CI 1.09 to 9.78; P=0.0203). ATP-linked respiration was higher by 1.79 units, but its 95% CI included zero (-0.06 to 3.64; P=0.0562). After Holm correction across the three displayed endpoints, basal OCR (Holm P=0.0221) and maximal OCR (Holm P=0.0406) remained below 0.05; ATP-linked respiration did not (Holm P=0.0562).
+
+The exact EC-adjusted donor-label permutation analysis gave P=0.0143, P=0.0333 and P=0.0238 for basal OCR, ATP-linked respiration and maximal OCR, respectively. ATP-linked respiration is therefore best described as borderline or method-sensitive rather than as an unequivocal difference.
+
+## Replotted endpoints
+
+Each point remains an EC-line x fibroblast-line combination for visual continuity. The statistical test nevertheless uses fibroblast donor as the repeated biological unit.
+
+```{r primary-figure, echo=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(out_dir, "seahorse_primary_endpoints_mixed_model.png"))
+```
+
+Vector versions are provided as SVG and PDF in the analysis output folder.
+
+## Data-label audit
+
+```{r design-table, echo=FALSE}
+design_table <- dat %>%
+  distinct(ec_line, fibroblast_observed, fibroblast_model, condition) %>%
+  arrange(condition, fibroblast_model, ec_line)
+kable(design_table)
+```
+
+The six progressive-SSc lines and healthy lines NH208 and NH162 occur once in every EC-line block. **NH140 and NH198 are retained as separate healthy fibroblast donors in all statistical tests.** NH140 contributes the EC-line 1 measurement, whereas NH198 contributes the EC-line 2 and 3 measurements. The mixed model and blocked permutation analysis accommodate this incomplete crossing. EC source codes 427010, 412005 and 427001 are displayed as EC lines 1, 2 and 3, respectively.
+
+## Additional endpoints
+
+```{r all-endpoints-table, echo=FALSE}
+results %>%
+  transmute(
+    Endpoint = label,
+    Difference = round(estimate_ssc_minus_healthy, 3),
+    `95% CI` = sprintf("%.2f to %.2f", ci_low, ci_high),
+    `Mixed-model P` = fmt_p(lmm_kenward_roger_p),
+    `Exact permutation P` = fmt_p(donor_exact_permutation_p),
+    `Condition x EC P` = fmt_p(condition_by_ec_interaction_p),
+    `Singular fit` = singular_fit
+  ) %>%
+  kable()
+```
+
+## Interpretation for the figure
+
+For panel C, replace the current P values with the mixed-model values:
+
+- Basal OCR: **P=0.0074**
+- ATP-linked respiration: **P=0.0562**
+- Maximal OCR: **P=0.0203**
+
+Suggested legend wording: "P values were calculated using linear mixed-effects models with fibroblast condition and EC line as fixed effects and fibroblast donor as a random intercept; denominator degrees of freedom were estimated using the Kenward-Roger method. NH140 and NH198 were treated as separate healthy fibroblast donors. Points represent individual EC-line x fibroblast-line combinations (9 combinations from four healthy fibroblast donors and 18 combinations from six progressive-SSc fibroblast donors)."
+
+The workbook contains Seahorse-derived endpoints only. It does not contain the extracellular-lactate measurements shown in panel B, so the displayed lactate P=0.019 was not recalculated here.
+
+## Reproducibility
+
+The analysis is generated by `analyze_seahorse_crossed_design.R`. Machine-readable model results, donor means, design counts, plots and model summaries are stored in `seahorse_crossed_design_analysis`.

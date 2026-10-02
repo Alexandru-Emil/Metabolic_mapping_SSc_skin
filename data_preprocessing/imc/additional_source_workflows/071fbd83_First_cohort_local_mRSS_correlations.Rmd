@@ -1,0 +1,450 @@
+---
+title: "First-cohort metabolic-neighborhood correlations with local mRSS"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    code_folding: hide
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  dpi = 180
+)
+
+suppressPackageStartupMessages({
+  library(SpatialExperiment)
+  library(readxl)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(patchwork)
+  library(scales)
+  library(knitr)
+})
+
+spe_path <- project_path("IMC_metabolic_analysis_AEM/Datasets/spe20250127174306.rds")
+clinical_path <- project_path("Revision/Clinical data_metabolic_AEM_therapy_localmRss.xlsx")
+output_dir <- file.path(getwd(), "first_cohort_local_mRSS_outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+theme_set(theme_bw(base_size = 13))
+```
+
+## Analysis definition
+
+This report adapts the original first-cohort neighborhood-correlation analysis to the **local skin score** recorded in the revised clinical table. The original analysis unit and normalization are retained: for every SSc donor, each base-cluster/neighbor combination is expressed as a percentage of all stromal cells from that donor, and the donor-level percentages are correlated with the clinical score using Spearman's rank correlation.
+
+The local score is available for eight of the nine SSc donors. Its observed range is limited to 1 or 2, producing many tied ranks. Raw asymptotic Spearman p-values are used for plot colors to preserve the convention of the original figure. Exact two-sided permutation p-values across all possible allocations of the three score-2 labels among eight donors, and Benjamini-Hochberg-adjusted q-values across the 33 displayed correlations, are reported in the audit table.
+
+```{r helpers}
+parse_local_score <- function(x) {
+  x <- as.character(x)
+  out <- suppressWarnings(as.numeric(x))
+  needs_parse <- is.na(out) & grepl("[0-9]", x)
+  out[needs_parse] <- suppressWarnings(as.numeric(
+    sub(".*?([0-9]+(?:\\.[0-9]+)?).*", "\\1", x[needs_parse], perl = TRUE)
+  ))
+  out
+}
+
+cluster_labels <- c(
+  stromal_1 = "TCA/OXPHOS\u02b0\u2071\nPGC-1\u03b1\u02b0\u2071_Fib",
+  stromal_2 = "Met\u02b0\u2071_Fib",
+  stromal_3 = "TCA/OXPHOS\u2071\u207f\u1d57\nPGC-1\u03b1\u02b0\u2071_Fib",
+  stromal_4 = "pmTOR\u02b0\u2071CD98\u02b0\u2071_Fib",
+  stromal_5 = "Met\u02e1\u1d52\u02b7_Fib",
+  stromal_6 = "Glycolysis\u2071\u207f\u1d57\nCS\u02b0\u2071OGDH\u02e1\u1d52\u02b7_Fib",
+  stromal_7 = "Glut\u02b0\u2071_Fib",
+  stromal_8 = "Glycolysis\u2071\u207f\u1d57\nPGC-1\u03b1\u02e1\u1d52\u02b7FAO\u02e1\u1d52\u02b7_Fib",
+  CD31_1 = "Met\u02e1\u1d52\u02b7_EC",
+  CD31_2 = "TCA/OXPHOS\u02b0\u2071\nPGC-1\u03b1\u02b0\u2071_EC",
+  CD31_3 = "Met\u02b0\u2071_EC",
+  CD31_4 = "pmTOR\u02b0\u2071CD98\u02b0\u2071_EC",
+  CD31_5 = "Glycolysis\u02b0\u2071\nTCA/OXPHOS\u2071\u207f\u1d57PPP\u02b0\u2071_EC",
+  CD45_CD68_1 = "Met\u02b0\u2071_Mf",
+  CD45_CD68_2 = "Met\u02e1\u1d52\u02b7_Mf",
+  CD45_CD68_3 = "Glycolysis\u02e1\u1d52\u02b7\nTCA/OXPHOS\u02b0\u2071_Mf",
+  CD45_CD68_4 = "Glycolysis\u02b0\u2071\nTCA/OXPHOS\u02b0\u2071_Mf"
+)
+
+panel_definitions <- bind_rows(
+  tibble(panel = "A", base_cluster = "stromal_2", neighbor_cluster = paste0("stromal_", 1:8),
+         panel_title = "Met\u02b0\u2071_Fib \u2192 fibroblast neighborhoods"),
+  tibble(panel = "B", base_cluster = "stromal_2", neighbor_cluster = paste0("CD31_", 1:5),
+         panel_title = "Met\u02b0\u2071_Fib \u2192 endothelial neighborhoods"),
+  tibble(panel = "C", base_cluster = "stromal_4", neighbor_cluster = paste0("stromal_", 1:8),
+         panel_title = "pmTOR\u02b0\u2071CD98\u02b0\u2071_Fib \u2192 fibroblast neighborhoods"),
+  tibble(panel = "D", base_cluster = "stromal_8", neighbor_cluster = paste0("stromal_", 1:8),
+         panel_title = "Glycolysis\u2071\u207f\u1d57 PGC-1\u03b1\u02e1\u1d52\u02b7 FAO\u02e1\u1d52\u02b7_Fib \u2192 fibroblast neighborhoods"),
+  tibble(panel = "E", base_cluster = "stromal_8", neighbor_cluster = paste0("CD45_CD68_", 1:4),
+         panel_title = "Glycolysis\u2071\u207f\u1d57 PGC-1\u03b1\u02e1\u1d52\u02b7 FAO\u02e1\u1d52\u02b7_Fib \u2192 macrophage neighborhoods")
+) %>%
+  mutate(
+    neighbor_variable = paste0("has_", neighbor_cluster, "_neigh"),
+    positive_neighbor_value = paste0("with_", neighbor_cluster, "_neigh"),
+    display_label = unname(cluster_labels[neighbor_cluster])
+  )
+
+exact_binary_permutation_p <- function(score, frequency, observed_rho) {
+  stopifnot(length(score) == length(frequency))
+  n_high <- sum(score == max(score))
+  allocations <- combn(seq_along(score), n_high)
+  permuted <- apply(allocations, 2, function(high_indices) {
+    permuted_score <- rep(min(score), length(score))
+    permuted_score[high_indices] <- max(score)
+    suppressWarnings(cor(permuted_score, frequency, method = "spearman"))
+  })
+  mean(abs(permuted) >= abs(observed_rho) - sqrt(.Machine$double.eps), na.rm = TRUE)
+}
+```
+
+## Clinical data
+
+```{r clinical-data}
+clinical_raw <- suppressWarnings(read_xlsx(clinical_path, sheet = "Summary"))
+
+clinical <- clinical_raw %>%
+  transmute(
+    patient_id = `Label in metabolic panel`,
+    subtype = `Subtype (dc/lc)`,
+    current_mRSS = suppressWarnings(as.numeric(`current mRSS`)),
+    local_mRSS = parse_local_score(`Local skin score`)
+  ) %>%
+  filter(subtype != "healthy") %>%
+  mutate(included_local_mRSS = !is.na(local_mRSS))
+
+write.csv(clinical, file.path(output_dir, "local_mRSS_donor_inclusion.csv"), row.names = FALSE)
+
+kable(
+  clinical,
+  digits = 2,
+  caption = "SSc donors and local-mRSS availability"
+)
+```
+
+## Donor-level cluster frequencies
+
+```{r calculate-frequencies}
+spe <- readRDS(spe_path)
+cell_data <- as.data.frame(colData(spe)) %>%
+  transmute(
+    patient_id = patient_id,
+    indication = indication,
+    celltype = new_celllabels,
+    metabolic_cluster = pheno_clusters_new2,
+    cell_index = seq_len(n())
+  )
+
+neighbor_data <- as.data.frame(spe$hasNeigh_df)
+stopifnot(nrow(neighbor_data) == nrow(cell_data))
+needed_neighbor_variables <- unique(panel_definitions$neighbor_variable)
+stopifnot(all(needed_neighbor_variables %in% names(neighbor_data)))
+
+analysis_cells <- bind_cols(
+  cell_data,
+  neighbor_data[, needed_neighbor_variables, drop = FALSE]
+) %>%
+  filter(indication == "SSc", celltype == "Stromal")
+
+stromal_denominators <- analysis_cells %>%
+  count(patient_id, name = "stromal_denominator")
+
+frequency_long <- lapply(seq_len(nrow(panel_definitions)), function(i) {
+  definition <- panel_definitions[i, ]
+  analysis_cells %>%
+    mutate(
+      is_target = metabolic_cluster == definition$base_cluster &
+        .data[[definition$neighbor_variable]] == definition$positive_neighbor_value
+    ) %>%
+    group_by(patient_id) %>%
+    summarise(target_cells = sum(is_target, na.rm = TRUE), .groups = "drop") %>%
+    right_join(stromal_denominators, by = "patient_id") %>%
+    mutate(
+      target_cells = replace_na(target_cells, 0L),
+      frequency_percent = 100 * target_cells / stromal_denominator,
+      panel = definition$panel,
+      base_cluster = definition$base_cluster,
+      neighbor_cluster = definition$neighbor_cluster,
+      display_label = definition$display_label,
+      panel_title = definition$panel_title
+    )
+}) %>%
+  bind_rows() %>%
+  left_join(clinical, by = "patient_id")
+
+write.csv(
+  frequency_long,
+  file.path(output_dir, "local_mRSS_donor_level_neighborhood_frequencies.csv"),
+  row.names = FALSE
+)
+
+frequency_summary <- frequency_long %>%
+  filter(included_local_mRSS) %>%
+  group_by(panel, base_cluster, neighbor_cluster, display_label, panel_title) %>%
+  group_modify(~{
+    test <- suppressWarnings(cor.test(
+      .x$local_mRSS,
+      .x$frequency_percent,
+      method = "spearman",
+      exact = FALSE
+    ))
+    observed_rho <- unname(test$estimate)
+    tibble(
+      n_donors = nrow(.x),
+      rho = observed_rho,
+      p_spearman_raw = test$p.value,
+      p_exact_permutation = exact_binary_permutation_p(
+        .x$local_mRSS,
+        .x$frequency_percent,
+        observed_rho
+      ),
+      minimum_frequency_percent = min(.x$frequency_percent),
+      maximum_frequency_percent = max(.x$frequency_percent)
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    q_BH_33_tests = p.adjust(p_spearman_raw, method = "BH"),
+    direction = case_when(
+      rho > 0 ~ "positive",
+      rho < 0 ~ "negative",
+      TRUE ~ "zero"
+    )
+  ) %>%
+  arrange(panel, desc(rho))
+
+write.csv(
+  frequency_summary,
+  file.path(output_dir, "local_mRSS_correlation_results_33_tests.csv"),
+  row.names = FALSE
+)
+```
+
+## Correlation plots
+
+```{r plot-functions}
+plot_local_mrss_panel <- function(panel_id, show_legends = TRUE) {
+  plot_data <- frequency_summary %>%
+    filter(panel == panel_id) %>%
+    arrange(rho) %>%
+    mutate(display_label = factor(display_label, levels = display_label))
+
+  title_lookup <- c(
+    A = "Met\u02b0\u2071_Fib",
+    B = "Met\u02b0\u2071_Fib",
+    C = "pmTOR\u02b0\u2071CD98\u02b0\u2071_Fib",
+    D = "Glycolysis\u2071\u207f\u1d57 PGC-1\u03b1\u02e1\u1d52\u02b7 FAO\u02e1\u1d52\u02b7_Fib",
+    E = "Glycolysis\u2071\u207f\u1d57 PGC-1\u03b1\u02e1\u1d52\u02b7 FAO\u02e1\u1d52\u02b7_Fib"
+  )
+  subtitle_lookup <- c(
+    A = "local mRSS | fibroblast neighborhoods",
+    B = "local mRSS | endothelial neighborhoods",
+    C = "local mRSS | fibroblast neighborhoods",
+    D = "local mRSS | fibroblast neighborhoods",
+    E = "local mRSS | macrophage neighborhoods"
+  )
+
+  p <- ggplot(plot_data, aes(x = rho, y = display_label)) +
+    geom_vline(xintercept = 0, linewidth = 0.35, color = "grey75") +
+    geom_segment(
+      aes(x = 0, xend = rho, yend = display_label),
+      linewidth = 0.55,
+      color = "grey75"
+    ) +
+    geom_point(
+      aes(size = abs(rho), color = p_spearman_raw),
+      alpha = 1
+    ) +
+    scale_color_gradient(
+      name = "p value",
+      low = "red",
+      high = "blue",
+      limits = c(0.001, 0.05),
+      breaks = c(0.01, 0.02, 0.03, 0.04, 0.05),
+      labels = number_format(accuracy = 0.01),
+      na.value = "grey52"
+    ) +
+    scale_size_continuous(
+      name = "|cor coef|",
+      range = c(2.4, 8.2),
+      limits = c(0, 1),
+      breaks = c(0.2, 0.4, 0.6, 0.8)
+    ) +
+    scale_x_continuous(
+      breaks = pretty_breaks(n = 5),
+      labels = number_format(accuracy = 0.01),
+      expand = expansion(mult = c(0.08, 0.08))
+    ) +
+    labs(
+      title = unname(title_lookup[panel_id]),
+      subtitle = unname(subtitle_lookup[panel_id]),
+      x = "Spearman correlation",
+      y = NULL
+    ) +
+    theme_bw(base_size = 13) +
+    theme(
+      plot.title = element_text(size = 14, face = "plain", hjust = 0.5, margin = margin(b = 3)),
+      plot.subtitle = element_text(size = 13, hjust = 0.5, margin = margin(b = 8)),
+      axis.text.x = element_text(size = 11, color = "grey20"),
+      axis.text.y = element_text(size = 12, color = "grey20", lineheight = 0.92),
+      axis.title.x = element_text(size = 12),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_line(color = "grey86", linewidth = 0.45),
+      panel.grid.major.x = element_line(color = "grey92", linewidth = 0.4),
+      legend.title = element_text(size = 11),
+      legend.text = element_text(size = 10),
+      legend.key.height = unit(0.48, "cm"),
+      plot.margin = margin(8, 8, 8, 8)
+    ) +
+    guides(
+      color = guide_colorbar(order = 1, barheight = unit(2.5, "cm"), barwidth = unit(0.38, "cm")),
+      size = guide_legend(order = 2, override.aes = list(color = "black"))
+    )
+
+  if (!show_legends) {
+    p <- p + theme(legend.position = "none")
+  }
+  p
+}
+
+panel_plots <- setNames(lapply(LETTERS[1:5], plot_local_mrss_panel), LETTERS[1:5])
+
+panel_sizes <- list(
+  A = c(width = 8.0, height = 5.6),
+  B = c(width = 8.0, height = 4.8),
+  C = c(width = 8.0, height = 5.6),
+  D = c(width = 8.0, height = 5.6),
+  E = c(width = 8.0, height = 4.8)
+)
+
+for (panel_id in names(panel_plots)) {
+  p <- panel_plots[[panel_id]]
+  dims <- panel_sizes[[panel_id]]
+  stem <- file.path(output_dir, paste0("panel_", panel_id, "_local_mRSS_correlation"))
+  ggsave(paste0(stem, ".svg"), p, width = dims[["width"]], height = dims[["height"]], units = "in", bg = "white")
+  ggsave(paste0(stem, ".pdf"), p, width = dims[["width"]], height = dims[["height"]], units = "in", device = cairo_pdf, bg = "white")
+  ggsave(paste0(stem, ".png"), p, width = dims[["width"]], height = dims[["height"]], units = "in", dpi = 400, bg = "white")
+}
+```
+
+### Panel A
+
+```{r panel-a, echo=FALSE, fig.width=8, fig.height=5.6}
+panel_plots$A
+```
+
+### Panel B
+
+```{r panel-b, echo=FALSE, fig.width=8, fig.height=4.8}
+panel_plots$B
+```
+
+### Panel C
+
+```{r panel-c, echo=FALSE, fig.width=8, fig.height=5.6}
+panel_plots$C
+```
+
+### Panel D
+
+```{r panel-d, echo=FALSE, fig.width=8, fig.height=5.6}
+panel_plots$D
+```
+
+### Panel E
+
+```{r panel-e, echo=FALSE, fig.width=8, fig.height=4.8}
+panel_plots$E
+```
+
+## Combined figure
+
+The combined layout follows the arrangement of the supplied first-cohort figure. Individual vector panels above are preferable for direct replacement in an assembled manuscript figure.
+
+```{r combined-figure, echo=FALSE, fig.width=12.5, fig.height=16}
+combined_plot <- (
+  panel_plots$A + panel_plots$B + panel_plots$C +
+  panel_plots$D + panel_plots$E
+) +
+  plot_layout(
+    design = "
+      AABB
+      #CC#
+      DDEE
+    ",
+    guides = "keep"
+  ) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 22, face = "bold"))
+
+ggsave(
+  file.path(output_dir, "combined_local_mRSS_correlations.svg"),
+  combined_plot,
+  width = 12.5,
+  height = 16,
+  units = "in",
+  bg = "white"
+)
+ggsave(
+  file.path(output_dir, "combined_local_mRSS_correlations.pdf"),
+  combined_plot,
+  width = 12.5,
+  height = 16,
+  units = "in",
+  device = cairo_pdf,
+  bg = "white"
+)
+ggsave(
+  file.path(output_dir, "combined_local_mRSS_correlations.png"),
+  combined_plot,
+  width = 12.5,
+  height = 16,
+  units = "in",
+  dpi = 400,
+  bg = "white"
+)
+
+combined_plot
+```
+
+## Statistical results
+
+```{r results-table, echo=FALSE}
+results_for_display <- frequency_summary %>%
+  transmute(
+    Panel = panel,
+    `Base cluster` = unname(cluster_labels[base_cluster]),
+    `Neighbor cluster` = display_label,
+    `n donors` = n_donors,
+    `Spearman rho` = rho,
+    `Raw Spearman p` = p_spearman_raw,
+    `Exact permutation p` = p_exact_permutation,
+    `BH q (33 tests)` = q_BH_33_tests
+  )
+
+kable(
+  results_for_display,
+  digits = 4,
+  caption = "Local-mRSS correlations. The exact permutation p-value enumerates all 56 possible allocations of three score-2 labels among eight donors."
+)
+```
+
+## Interpretation guardrails
+
+- The analysis can be performed using local mRSS and is directly comparable in construction to the original current-mRSS analysis.
+- The effective sample size is eight donors because `SSc8` has no local skin score.
+- Local mRSS takes only two observed values (1 and 2), so it behaves as an ordered two-group variable rather than a finely graded severity measure.
+- Raw Spearman p-values match the original display convention. The exact permutation p-values and BH q-values should be used when assessing robustness.
+- These correlations are exploratory and should not be interpreted as independent cell-level tests.
+
+```{r session-info}
+sessionInfo()
+```

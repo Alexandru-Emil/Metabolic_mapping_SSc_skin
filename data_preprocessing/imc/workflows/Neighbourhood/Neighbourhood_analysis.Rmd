@@ -1,0 +1,690 @@
+---
+title: "Neighbourhood analysis for CosMx data - healthy and SSc"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, eval=TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# User-specified variables for loading the spe - **USER INPUTS REQUIRED** 
+
+```{r user_var_load_spe}
+# Path to the directory containing the input 'spe' files
+data_dir <- here('Datasets/')  # Specify the data directory
+
+# Name of the input 'spe' file to load
+input_spe_filename <- "spe20241110033414.rds"  # Specify the 'spe' file name
+
+# Explanations:
+# - **data_dir**: The directory where your input 'spe' files are located.
+# - **input_spe_filename**: The name of the 'spe' file to load.
+```
+# Load the spe
+
+```{r load spe}
+
+# Load the 'spe' object
+spe2 <- readRDS(file.path(data_dir, input_spe_filename))
+
+spe2$pheno_clusters_new2 <- case_when(
+  grepl("CD45_CD3",spe2$pheno_clusters_new) ~ "CD45",
+  TRUE ~ spe$pheno_clusters_new
+)
+
+for(i in grep(colnames(colData(spe2)), pattern = "^CN|aggNbh", value = TRUE)){
+  spe2[[i]] <- NULL
+}
+
+spe <- spe2
+
+```
+
+# Other user-specified variables - **USER INPUTS REQUIRED** 
+
+```{r user_var_other}
+# Path to the directory where the spe will be saved
+output_dir <- here('Datasets/')  # Specify the output directory
+
+# Name of the cell type variable in 'spe' (e.g., "celltype")
+cat(" Choose the cell type variable from:\n")
+cat(colnames(colData(spe)), sep = "\n")
+celltype_variable <- "pheno_clusters_new2"  # Specify the cell type variable in 'spe'
+
+# Define the donor variable from the variables printed above for celltype
+donor_variable <- "patient_id"
+
+# Define the donor variable from the variables printed above for celltype
+disease_variable <- "Disease"
+
+spe[[disease_variable]] <- as.character(spe[[disease_variable]])
+
+# Define colors for disease that match the number of unique values in the disease variable
+cat("\n The number of unique values in the disease variable are:", length(unique(spe[[disease_variable]])))
+cat("\n The unique values in the disease variable are:", unique(spe[[disease_variable]]), sep = "\n")
+color_vector_disease <- c("#4DBBD533", "#E64B35AA") # Specify colors for disease; the order will match to the unique values in the disease variable
+
+
+# Variable to subset the spe by, if needed
+subset_variable <- "lv1.anno_bank" # Specify the column in 'spe' to subset by
+cat(" Choose the cell type variable from:\n")
+cat(unique(spe[[subset_variable]]), sep = "\n")
+value_to_exclude <- "Undefined"
+
+# Should the spe be subset? Do not subset the spe if creating spatial graphs!
+  subset_flag <- FALSE  # Set to TRUE to subset the spe or FALSE to not subset it
+
+# Parameters for building spatial graphs, if not already present in the spe, or if new ones should be added
+# A list of spatial graphs to build, each with its parameters
+cat("\n The spatial graphs already present are:\n")
+cat(colPairNames(spe), sep = "\n")
+spatial_graph_params <- list(
+  list(type = "delaunay", max_dist = 200, name = "delaunay_200"),
+  list(type = "delaunay", max_dist = 300, name = "delaunay_300"),
+  list(type = "knn", k = 7, max_dist = 200, name = "knn_7_dist_200")
+  # Add more spatial graphs as needed
+)
+
+# Should spatial graphs be created?
+create_spatial_graphs_flag <- FALSE  # Set to TRUE to create spatial graphs or FALSE to not create them
+
+# Names of the spatial graphs (colPairNames) to use for plotting spatial graphs
+colPair_selected <- c("delaunay_80_new")  # Specify colPairs to plot
+
+# Parameters for creating neighbourhoods
+neighbourhood_params <- list(
+  aggregate_by = "metadata",
+  # Method for calculating neighbourhoods, choose between "metadata" or "expression" (expression of specified genes or proteins)
+  count_by = celltype_variable,
+  # If method is "metadata", specify the column in 'spe' to aggregate by (an annotation from the ones listed above for celltype), otherwise specify "NULL"
+  assay_type = "NULL",
+  # If method is "expression", specify the assay type to use for calculating neighbourhoods, otherwise specify "NULL"
+  subset_row = "NULL",
+  # If method is "expression", specify the genes or proteins to use for calculating neighbourhoods, otherwise specify "NULL"
+  k_values = c(10)          # Values of 'k' for k-means clustering (number of neighbourhoods)
+)
+
+# Should spatial graphs be created?
+create_neighbourhoods_flag <- TRUE  # Set to TRUE to create spatial graphs or FALSE to not create them
+
+# Any other variables that require manual input can be added here
+
+# Explanations:
+# - **output_dir**: The directory where the modified 'spe' files will be saved.
+# - **celltype_variable**: The column name in 'spe' that contains cell type annotations.
+# - **donor_variable**: The column name in 'spe' that contains donor IDs.
+# - **disease_variable**: The column name in 'spe' that contains disease annotations.
+# - **color_vector_disease**: A vector of colors for each unique value in the disease variable.
+# - **subset_variable**: The column name in 'spe' to subset by.
+# - **value_to_exclude**: The value to exclude when subsetting the 'spe'.
+# - **subset_flag**: A flag to determine whether to subset the 'spe'.
+# - **spatial_graph_params**: A list defining the spatial graphs to build, each with type, parameters, and name.
+# - **colPair_selected**: A vector of colPairNames (names of spatial graphs) to use when plotting spatial graphs.
+# - **create_spatial_graphs_flag**: A flag to determine whether to create spatial graphs.
+# - **neighbourhood_params**: Parameters for creating neighbourhoods, including how to aggregate and cluster.
+# - **create_neighbourhoods_flag**: A flag to determine whether to create neighbourhoods.
+```
+
+
+
+# Prepare spe for analysis
+
+```{r prepare spe for analysis, eval=TRUE, echo=TRUE}
+# Subset the spe
+ if (create_spatial_graphs_flag) {
+  subset_flag <- FALSE
+  cat("The spe will not be subset as spatial graphs are being created. Set create_spatial_graphs_flag to FALSE if you want to subset the spe.")
+} 
+if (subset_flag) {
+  spe <- spe2[, spe[[subset_variable]] != value_to_exclude]
+} else {
+  cat("The spe was not subset.")
+  spe <- spe2
+}
+
+# Assign the cell type variable
+spe$celltype <- spe[[celltype_variable]]
+
+# Set up color vectors for plotting
+color_vectors <- list()
+
+disease_color <- setNames(color_vector_disease, unique(spe[[disease_variable]]))
+
+color_vectors$disease <- disease_color
+metadata(spe)$color_vectors <- color_vectors
+```
+# Create new spatial graphs
+
+```{r create spatial graphs}
+# Function to build spatial graphs
+build_spatial_graphs <- function(spe_object, params_list) {
+  for (params in params_list) {
+    if (params$type == "delaunay") {
+      spe_object <- buildSpatialGraph(
+        spe_object,
+        img_id = "donor",
+        type = params$type,
+        max_dist = params$max_dist,
+        name = params$name
+      )
+    } else if (params$type == "knn") {
+      spe_object <- buildSpatialGraph(
+        spe_object,
+        img_id = "donor",
+        type = params$type,
+        k = params$k,
+        max_dist = params$max_dist,
+        name = params$name
+      )
+    }
+  }
+  return(spe_object)
+}
+
+if (create_spatial_graphs_flag) {
+  # Build spatial graphs
+  spe <- build_spatial_graphs(spe, spatial_graph_params)
+
+# Build spatial graphs
+spe <- build_spatial_graphs(spe, spatial_graph_params)
+} else {
+  cat("Spatial graphs were not created.")
+}
+```
+
+# Create spatial graph plots
+
+```{r create spatial graph plots, cache=TRUE}
+
+  spatial_plot_list <- list()
+
+# Create color vector for cell types
+color_vector_celltype <- setNames(
+  distinct_colors(length(unique(spe$celltype)))$name,
+  unique(spe$celltype)
+)
+  
+  # Loop over each unique donor
+  for (sample_id in unique(spe[[donor_variable]])) {
+    # Initialize a list to store plots for each colPairName for the current sample ID
+    sample_plots <- list()
+    
+    # Loop over each colPairName
+    for (colPair in colPair_selected) {
+      # Generate the spatial plot for the current sample ID and colPairName
+      plot_spatial_graph <- plotSpatial(
+        spe[, spe[[donor_variable]] == sample_id],
+        node_color_by = "celltype",
+        img_id = "sample_id",
+        draw_edges = TRUE,
+        colPairName = colPair,
+        nodes_first = FALSE,
+        edge_color_fix = "grey"
+      ) + 
+        ggtitle(paste0(sample_id, " ", colPair)) +
+        scale_color_manual(values = color_vector_celltype)
+      
+      # Store the plot in the nested list
+      sample_plots[[colPair]] <- plot_spatial_graph
+    }
+    # Store the nested list of plots in the main list
+    spatial_plot_list[[sample_id]] <- sample_plots
+  }
+
+```
+
+# Display the spatial graph plots {.tabset .tabset-pills}
+
+`r fig_dim <- c(10, 10)`
+
+```{r display spatial graph plots, fig.dim=fig_dim, results='asis'}
+
+for (sample_id in names(spatial_plot_list)) {
+  cat("## ", sample_id, "{.tabset .tabset-pills}\n\n")
+  for (colPair in names(spatial_plot_list[[sample_id]])) {
+    cat("### ", colPair, "\n\n")
+    print(spatial_plot_list[[sample_id]][[colPair]])
+    cat("\n\n")
+  }
+}
+```
+
+# Create neighbourhoods
+
+```{r create neighbourhoods}
+
+# Function to create neighbourhoods
+create_neighbourhoods <- function(spe_object, neighbourhood_params) {
+  # Aggregate neighbors for each spatial graph
+  for (colPair in colPairNames(spe_object)) {
+    spe_object <- aggregateNeighbors(
+      spe_object,
+      colPairName = colPair,
+      aggregate_by = neighbourhood_params$aggregate_by,
+      count_by = neighbourhood_params$count_by,
+      assay_type = neighbourhood_params$assay_type,
+      subset_row = neighbourhood_params$subset_row,
+      name = paste0("aggNbh_", colPair)
+    )
+  }
+  
+  # Perform k-means clustering to create neighbourhoods
+  aggNbh_elem <- grep("^aggNbh", colnames(colData(spe_object)), value = TRUE)
+  for (aggNbh in aggNbh_elem) {
+    for (k in neighbourhood_params$k_values) {
+      set.seed(123)
+      cn <- kmeans(spe_object[[aggNbh]], centers = k)
+      spe_object[[paste0("CN_", k, "_", aggNbh)]] <- as.factor(cn$cluster)
+    }
+  }
+  return(spe_object)
+}
+
+if (create_neighbourhoods_flag) {
+  # Create neighbourhoods
+  spe <- create_neighbourhoods(spe, neighbourhood_params)
+} else {
+  cat("Neighbourhoods were not created.")
+}
+
+```
+
+# User-specified variable for plotting neighbourhoods - **USER INPUTS REQUIRED** 
+
+```{r user_var_nbh, include=FALSE}
+
+# Names of the neighbourhood variables to use for plotting
+all_nbh <- grep("^CN_", colnames(colData(spe)), value = TRUE)
+cat(" Choose the neighbourhood variable from:\n")
+cat(all_nbh, sep = "\n")
+nbh_selected <- c("CN_10_aggNbh_delaunay_80_new")  # Specify neighbourhood variables to plot
+
+# Explanations:
+# - **nbh_selected**: A vector of neighbourhood variable names to use when plotting neighbourhoods.
+```
+
+# Plot neighbourhoods
+
+```{r neighbourhood analysis - plot neighbourhoods, cache=TRUE} 
+
+# Initialize list to store the spatial plots
+neighbourhood_plot_list <- list()
+
+# Ensure neighbourhood variables are factors
+for (nbh in nbh_selected) {
+  spe[[nbh]] <- as.factor(spe[[nbh]])
+}
+
+# Loop over each unique donor
+for (sample_id in unique(spe[[donor_variable]])) {
+  # Initialize a list to store plots for each neighbourhood
+  sample_plots <- list()
+  for (nbh in nbh_selected) {
+    # Create color vector for neighbourhoods
+    nbh_levels <- levels(spe[[nbh]])
+    color_vector_nbh <- setNames(distinct_colors(length(nbh_levels))$name, nbh_levels)
+    
+    # Generate the spatial plot for the current sample ID and neighbourhood
+    plot_spatial_graph <- plotSpatial(
+      spe[, spe[[donor_variable]] == sample_id],
+      node_color_by = nbh,
+      img_id = "sample_id",
+      node_size_fix = 3,
+      scales = "free",
+      aspect_ratio = NULL
+    ) +
+      ggtitle(paste0(sample_id, " ", nbh)) +
+      scale_color_manual(values = color_vector_nbh)
+    
+    # Store the plot
+    sample_plots[[nbh]] <- plot_spatial_graph
+  }
+  neighbourhood_plot_list[[sample_id]] <- sample_plots
+}
+
+```
+
+# Display the neighbourhood plots {.tabset .tabset-pills}
+
+`r fig_dim <- c(10, 10)`
+
+```{r display neighbourhood plots, fig.dim=fig_dim, results='asis'}
+# Display the neighbourhood plots in tabs
+for (sample_id in names(neighbourhood_plot_list)) {
+  cat("## ", sample_id, "{.tabset .tabset-pills}\n\n")
+  for (nbh in names(neighbourhood_plot_list[[sample_id]])) {
+    cat("### ", nbh, "\n\n")
+    print(neighbourhood_plot_list[[sample_id]][[nbh]])
+    cat("\n\n")
+  }
+}
+```
+
+# Heatmaps rescaled for neighbourhood analysis
+
+```{r neighbourhood analysis - heatmap rescaled}
+# Initialize the list to store heatmap objects
+heatmap_plot_list <- list()
+
+# Loop over each selected neighbourhood
+for (nbh in nbh_selected) {
+  #message(paste("Processing neighbourhood:", nbh))
+  
+  # Prepare the data for plotting
+  for_plot <- prop.table(
+    table(spe[[nbh]], spe$celltype),
+    margin = 2
+  )
+  
+  #message("  Prepared for_plot data.")
+  
+  # Check the structure of for_plot
+  #print(head(for_plot))
+  
+  # Create the heatmap plot and store the object
+  heatmap_plot <- tryCatch({
+    pheatmap(
+      for_plot,
+      color = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+      scale = "column",
+      main = paste0("Heatmap for ", nbh)
+    )
+  }, error = function(e){
+    message(paste("Error generating heatmap for neighbourhood:", nbh))
+    message(e$message)
+    return(NULL)
+  })
+  
+  # Check if pheatmap succeeded
+  if (is.null(heatmap_plot)) {
+    next  # Skip to the next iteration if there was an error
+  }
+  
+  #message("  Generated pheatmap.")
+  
+  # Store the pheatmap object in the list
+  heatmap_plot_list[[nbh]] <- heatmap_plot
+}
+
+```
+
+# Display the neighbourhood heatmaps rescaled {.tabset .tabset-pills}
+
+`r fig_dim <- c(7, 7)`
+
+```{r display neighbourhood heatmaps rescaled, fig.dim=fig_dim, results='asis'}
+# Loop over each stored heatmap object and plot it
+for (nbh in names(heatmap_plot_list)) {
+  cat("## ", nbh, "\n\n")
+  print(heatmap_plot_list[[nbh]])
+  cat("\n\n")
+}
+```
+
+```{r display neighbourhood heatmaps nice, fig.width=4, fig.height=4, results='asis'}
+# Loop over each stored heatmap object and plot it
+for (nbh in names(heatmap_plot_list)) {
+  cat("## ", nbh, "\n\n")
+  print(heatmap_plot_list[[nbh]])
+  cat("\n\n")
+}
+```
+
+# Heatmaps counts for neighbourhood analysis
+
+```{r neighbourhood analysis - heatmap counts}
+# Initialize the list to store heatmap objects
+heatmap_plot_list <- list()
+
+# Loop over each selected neighbourhood
+for (nbh in nbh_selected) {
+  #message(paste("Processing neighbourhood:", nbh))
+  
+  # Prepare the data for plotting
+  for_plot <- table(spe[[nbh]], spe$celltype)
+  
+  #message("  Prepared for_plot data.")
+  
+  # Check the structure of for_plot
+  #print(head(for_plot))
+  
+  # Create the heatmap plot and store the object
+  heatmap_plot <- tryCatch({
+    pheatmap(
+      for_plot,
+      color = viridis(100),
+      display_numbers = TRUE,
+      number_color = "white",
+      number_format = "%.0f",
+      main = paste0("Heatmap for ", nbh)
+    )
+  }, error = function(e){
+    message(paste("Error generating heatmap for neighbourhood:", nbh))
+    message(e$message)
+    return(NULL)
+  })
+  
+  # Check if pheatmap succeeded
+  if (is.null(heatmap_plot)) {
+    next  # Skip to the next iteration if there was an error
+  }
+  
+  #message("  Generated pheatmap.")
+  
+  # Store the pheatmap object in the list
+  heatmap_plot_list[[nbh]] <- heatmap_plot
+}
+
+```
+
+# Display the neighbourhood heatmaps counts {.tabset .tabset-pills}
+
+`r fig_dim <- c(7, 7)`
+
+```{r display neighbourhood heatmaps counts, fig.dim=fig_dim, results='asis'}
+# Loop over each stored heatmap object and plot it
+for (nbh in names(heatmap_plot_list)) {
+  cat("## ", nbh, "\n\n")
+  print(heatmap_plot_list[[nbh]])
+  cat("\n\n")
+}
+```
+
+# Frequencies of neighbourhoods
+
+```{r neighbourhood analysis - plot frequencies}
+
+boxplot_plot_list <- list()
+
+# Extract colData as a dataframe
+coldata_df <- as.data.frame(colData(spe))
+coldata_df_to_merge <- coldata_df %>% select(disease_variable, donor_variable)
+# Extract unique donor-disease pairs
+donor_disease <- unique(coldata_df_to_merge[, c(disease_variable, donor_variable)])
+
+for (nbh in nbh_selected) {
+  # Initialize a list to store plots for each neighbourhood
+  cluster_plots <- list()
+  for_plot2 <- as.data.frame(prop.table(table(spe[[nbh]], spe[[donor_variable]]), margin = 2))
+  
+  for_plot2 <- for_plot2 %>%
+    mutate(Donor = Var2)
+  # Merge for_plot2 with donor_disease on the Donor and donor columns
+  for_plot2 <- merge(
+    for_plot2,
+    donor_disease,
+    by.x = 'Donor',
+    by.y = donor_variable,
+    all.x = TRUE
+  )
+  for_plot2 <- for_plot2 %>% rename_with( ~ "Disease", all_of(disease_variable))
+  for_plot2$Disease <- as.character(for_plot2$Disease)
+  
+  for (cluster in unique(for_plot2$Var1)) {
+    for_plot_sub <- for_plot2[for_plot2$Var1 == cluster, ]
+    if (length(unique(for_plot2$Disease)) == 2) {
+      boxplot_plot <- ggplot(data = for_plot_sub, aes(x = Disease, y = Freq, fill = Disease)) +
+        geom_boxplot(outlier.shape = NA) +
+        stat_compare_means(
+          comparisons = list(unique(for_plot_sub$Disease)),
+          method = "wilcox.test",
+          hide.ns = TRUE,
+          label.y = max(for_plot_sub$Freq) + 0.05
+        ) +
+        get_common_boxplot_components_fx() +
+        scale_fill_manual(values = metadata(spe)$color_vectors$disease) +
+        labs(
+          x = "Disease",
+          y = "Frequency",
+          fill = "Disease",
+          title = paste0("Frequency of Cluster ", cluster, " for ", nbh)
+        )
+      
+    } else {
+      dunn_res <- as.data.frame(for_plot_sub) %>% rstatix::dunn_test (Freq ~ Disease, p.adjust.method =
+                                                                        "none") %>% mutate (method = "Dunn")
+      # Get unique disease levels from your data
+      disease_levels <- unique(for_plot_sub$Disease)
+      
+      # Convert Disease to factor with specified levels
+      for_plot_sub <- for_plot_sub %>%
+        mutate(Disease = factor(Disease, levels = disease_levels))
+      
+      # Convert group1 and group2 to factors with the same levels
+      dunn_res <- dunn_res %>%
+        mutate(
+          group1 = factor(group1, levels = disease_levels),
+          group2 = factor(group2, levels = disease_levels)
+        )
+      
+      # Calculate the number of comparisons
+      num_comparisons <- nrow(dunn_res)
+      
+      # Define the base y-position and the increment
+      base_y <- max(for_plot_sub$Freq) + 0.1
+      increment <- 0.05
+      
+      # Add y.position to dunn_res
+      dunn_res <- dunn_res %>%
+        mutate(y.position = base_y + (seq_len(num_comparisons) - 1) * increment)
+      
+      boxplot_plot <- ggplot(data = for_plot_sub, aes(x = Disease, y = Freq, fill = Disease)) +
+        geom_boxplot(outlier.shape = NA) +
+        stat_pvalue_manual(
+          data = dunn_res,
+          inherit.aes = FALSE,
+          mapping = aes(
+            x = group1,
+            xend = group2,
+            y.position = y.position,
+            label = p.adj
+          ),
+          bracket.shorten = 0.05
+        ) +
+        stat_compare_means(method = "kruskal",
+                           label.y = base_y + num_comparisons * increment + 0.05) +
+        get_common_boxplot_components_fx() +
+        #     scale_fill_manual(values = metadata(spe)$color_vectors$disease) +
+        labs(
+          x = "Disease",
+          y = "Frequency",
+          fill = "Disease",
+          title = paste0("Frequency of Cluster ", cluster, " for ", nbh)
+        )
+    }
+    # Store the plot
+    cluster_plots[[cluster]] <- boxplot_plot
+  }
+    boxplot_plot_list[[nbh]] <- cluster_plots
+}
+
+```
+
+# Display the neighbourhood frequencies {.tabset .tabset-pills}
+
+`r fig_dim <- c(5, 4)`
+
+```{r display neighbourhood frequencies, fig.dim=fig_dim, results='asis'}
+# Display the frequency plots
+for (nbh in names(boxplot_plot_list)) {
+  cat("## ", nbh, "{.tabset .tabset-pills}\n\n")
+  for (cluster in names(boxplot_plot_list[[nbh]])) {
+    cat("### ", cluster, "\n\n")
+    print(boxplot_plot_list[[nbh]][[cluster]])
+    cat("\n\n")
+  }
+}
+
+```
+
+# Save the spe if spatial graphs or neighbourhoods were created
+```{r save spe}
+
+all_nbh <- grep("^CN_", colnames(colData(spe)), value = TRUE)
+
+if (create_neighbourhoods_flag) {
+  if (subset_flag) {
+    for (nbh in all_nbh) {
+      spe2[[nbh]] <- rep(NA, ncol(spe2))
+      match_var <- match(colnames(spe), colnames(spe2))
+      spe2[[nbh]][match_var] <- spe[[nbh]]
+    }
+  } else {
+    spe2 <- spe
+  }
+}
+
+  
+  if (create_spatial_graphs_flag | create_neighbourhoods_flag) {
+    # Save the modified 'spe' object with a timestamp
+    output_spe_filename <- paste0(gsub("20.*", "", input_spe_filename),ts, ".rds")
+    
+    saveRDS(spe2, file.path(output_dir, output_spe_filename))
+    cat("The modified 'spe' object was saved as:", output_spe_filename)
+  } else {
+    cat("No spatial graphs or neighbourhoods were created. No 'spe' object was saved.")
+  }
+  
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. It creates spatial graphs for the spe if required.
+2. It creates neighbourhoods for the spe if required.
+3. It plots the spatial graphs, colored by selected cell types or neighbourhoods.
+4. It creates heatmaps for the neighbourhood analysis.
+5. It plots the frequencies of neighbourhoods.
+6. It saves the spe with the newly created spatial graphs and neighbourhoods at '`r paste0(output_dir, output_spe_filename, sep="")`'. If neither spatial graphs nor neighbourhoods were created, it does not create an spe object. <br>
+
+# Session information
+
+```{r session}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

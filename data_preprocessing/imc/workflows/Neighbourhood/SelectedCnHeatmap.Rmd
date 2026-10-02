@@ -1,0 +1,188 @@
+---
+title: "CN heatmap"
+author: "Alex Matei (adapted from Yi-Nan Li)"
+date: "`r Sys.Date()`"
+output: 
+   html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+    theme: bootstrap
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+## set working directory for CLI rendering
+```
+
+
+```{r ts}
+ptm <- proc.time()
+tstamp <- format(Sys.time(), '%y%m%d%H%M%S')
+
+```
+  
+  
+```{r, echo=FALSE,include = FALSE}
+library(DT)
+library(knitr)
+# You need this code to conduct the magic dependences attaching...
+    datatable(
+      as.data.frame(1),
+      options = list(pageLength = 50, searchHighlight = TRUE,
+  buttons = c('csv'),dom = 'Bfrtip'),extensions="Buttons"
+      )
+```  
+<br>
+This analysis is timestamped wtih ``r tstamp``. <br>
+<br>
+
+## Aim
+  
+Creat CN composition heatmap.  
+  
+
+## Data
+  
+```{r data}
+library(SpatialExperiment)
+library(tidyverse)
+library(imcRtools)
+
+spe <- readRDS(here('Datasets/spe20250127174306.rds'))
+
+
+```
+  
+## Selected CN in SSc v healthy {.tabeset .tabset-pills}
+  
+  
+```{r cn-interest, fig.width=7, fig.height=7, results='asis'}
+
+library(viridis)
+library(RColorBrewer)
+
+rescale <- c('None', 'CN', 'CellType')
+#cn_interest <- c(1:10)
+cn_interest <- c(4:10)
+#cell_interest <- unique(spe$pheno_clusters_new2)
+cell_interest <- grep("^str", unique(spe$pheno_clusters_new2), value = T)
+celltype_var <- "pheno_clusters_new2"
+nbh_var <- "CN_10_aggNbh_delaunay_80_new"
+disease_var <- "Disease"
+#disease_var <- "Progression_skin"
+
+for (i in rescale) {
+  cat('\n\n###', i, ' {.tabset .tabset-pills} \n\n')
+  rescale_var <- if (i == 'CN') {
+    'column'
+  } else if (i == 'CellType') {
+    'row'
+  } else {
+    'none'
+  }
+  color_var <- if (i == 'None') {
+    c(magma(20)[1:10], magma(100)[50:100])
+  } else {
+    colorRampPalette(c("dark blue", "white", "dark red"))(100)
+    #colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)
+  }
+  breaks <- if (i == 'None') {
+    seq(0, 1, length.out = 61)
+  } else {
+    seq(-2, 2, length.out = 100)
+  }
+  
+  cat('\n\n#### CN composition \n')
+  
+  table(spe[[celltype_var]], spe[[nbh_var]]) %>% prop.table(2) %>%
+    pheatmap:::scale_mat(scale = rescale_var) %>%
+    .[cell_interest, cn_interest] %>%
+    pheatmap::pheatmap(
+      scale = 'none',
+      cluster_cols = FALSE,
+      cluster_rows = FALSE,
+      color = color_var,
+      breaks = breaks,
+      main = paste0('AllCellScaledBy', i)
+    )
+  cat('\n\n#### CN comp in healthy \n')
+    table(spe[[celltype_var]], spe[[nbh_var]], spe[[disease_var]]) %>% prop.table(2) %>%
+      .[,,'Healthy'] %>%
+      pheatmap:::scale_mat(scale = rescale_var) %>%
+      .[cell_interest, cn_interest] %>%
+    pheatmap::pheatmap(
+      scale = 'none',
+      cluster_cols = FALSE,
+      cluster_rows = FALSE,
+      color = color_var,
+      breaks = breaks,
+      main = paste0('HealthyScaledBy', i)
+    )
+  cat('\n\n#### CN comp in SSc \n')
+    table(spe[[celltype_var]], spe[[nbh_var]], spe[[disease_var]]) %>% prop.table(2) %>%
+      .[,,'SSc'] %>%
+      pheatmap:::scale_mat(scale = rescale_var) %>%
+      .[cell_interest, cn_interest] %>%
+    pheatmap::pheatmap(
+      scale = 'none',
+      cluster_cols = FALSE,
+      cluster_rows = FALSE,
+      color = color_var,
+      breaks = breaks,
+      main = paste0('SScScaledBy', i)
+    )
+    #   cat('\n\n#### CN comp in SSc stable \n')
+    # table(spe[[celltype_var]], spe[[nbh_var]], spe[[disease_var]]) %>% prop.table(2) %>%
+    #   .[,,'stable'] %>%
+    #   pheatmap:::scale_mat(scale = rescale_var) %>%
+    #   .[cell_interest, cn_interest] %>%
+    # pheatmap::pheatmap(
+    #   scale = 'none',
+    #   cluster_cols = FALSE,
+    #   cluster_rows = FALSE,
+    #   color = color_var,
+    #   breaks = breaks,
+    #   main = paste0('SScstableScaledBy', i)
+    # )
+    #   cat('\n\n#### CN comp in SSc progressive \n')
+    # table(spe[[celltype_var]], spe[[nbh_var]], spe[[disease_var]]) %>% prop.table(2) %>%
+    #   .[,,'progressive'] %>%
+    #   pheatmap:::scale_mat(scale = rescale_var) %>%
+    #   .[cell_interest, cn_interest] %>%
+    # pheatmap::pheatmap(
+    #   scale = 'none',
+    #   cluster_cols = FALSE,
+    #   cluster_rows = FALSE,
+    #   color = color_var,
+    #   breaks = breaks,
+    #   main = paste0('SScprogScaledBy', i)
+    # )
+}
+```
+
+  
+  
+  
+## Output
+
+Heatmaps illustrating the CN composition in all cells, healthy and SSc.
+  
+
+## Session information
+```{r session}
+etm <- proc.time() - ptm
+cat('This analysis took :', etm[3], 's \n')
+sessioninfo::session_info()
+```
+
+## Rendering command in CLI (if required)
+
+```{bash render, eval = FALSE}
+Rscript -e "rmarkdown::render('~/projects/2024_CosMxUAP/20241209_CosMxSScSkin_CnHeatmap.Rmd', output_file = '20241130_CosMxSScSkin_CnMerge_$(date +"%Y%m%d_%H%M%S").html')" > ~/projects/2024_CosMxUAP/logs/cn_$(date +"%Y%m%d_%H%M%S").log 2>&1
+```
+

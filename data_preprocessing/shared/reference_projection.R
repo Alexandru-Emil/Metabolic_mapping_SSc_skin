@@ -1,0 +1,42 @@
+# S9D: parameterized copy of the executed 2026-10-02 reference-projection workflow.
+# Same PCA/UMAP/anchor/MapQuery operations as IMC_heatmap_sankey_new.Rmd.
+# Inputs must already use the public donor/cell aliases and recorded_Gender fields.
+args<-commandArgs(trailingOnly=TRUE)
+if(length(args)!=3)stop("Usage: Rscript data_preprocessing/shared/reference_projection.R REFERENCE_SPE VALIDATION_SPE OUTPUT_DIR")
+source("data_preprocessing/common/config.R")
+require_packages(c("SingleCellExperiment","Seurat","future"))
+suppressPackageStartupMessages({library(SingleCellExperiment);library(Seurat)})
+Sys.setenv(OMP_NUM_THREADS="1",OPENBLAS_NUM_THREADS="1",MKL_NUM_THREADS="1")
+future::plan("sequential")
+sp1<-read_analysis_object(args[1]);sp2<-read_analysis_object(args[2])
+for(o in list(sp1,sp2))stopifnot(all(c("donor","recorded_Gender")%in%colnames(colData(o))))
+keep1<-as.character(sp1$cell_labels)=="Stromal"
+keep2<-as.character(sp2$gates)=="Stromal"&sp2$donor%in%validation_donors
+stopifnot(sum(keep1)==20657,sum(keep2)==1155,length(unique(sp2$donor[keep2]))==6)
+metlabels<-ifelse(sp2$Rphenograph_500%in%c("1","2"),"Met_hi_Fib",ifelse(sp2$Rphenograph_500=="3","Other_Fib",NA))
+stopifnot(!anyNA(metlabels[keep2]),sum(metlabels[keep2]=="Met_hi_Fib")==622)
+features<-as.logical(rowData(sp1)$use_channel_met_markers);stopifnot(sum(features)==21)
+ref_counts<-as.matrix(assay(sp1,"counts")[,keep1]);ref_data<-as.matrix(assay(sp1,"asinh")[,keep1]);ref_scale<-as.matrix(assay(sp1,"z-rescaled_new")[,keep1])
+query_counts<-as.matrix(assay(sp2,"counts")[,keep2]);query_data<-as.matrix(assay(sp2,"asinh")[,keep2])
+query_scale<-t(apply(query_data,1,function(v)(v-mean(v))/sd(v)))
+# The original workflow aligns these two 48-channel panels by position.
+rownames(query_counts)<-rownames(query_data)<-rownames(query_scale)<-rownames(sp1)
+meta1<-data.frame(celltype=as.character(sp1$celltype[keep1]),row.names=colnames(sp1)[keep1])
+meta2<-data.frame(metfiblabel=metlabels[keep2],row.names=colnames(sp2)[keep2])
+ref<-CreateSeuratObject(CreateAssay5Object(counts=ref_counts,data=ref_data),meta.data=meta1)
+query<-CreateSeuratObject(CreateAssay5Object(counts=query_counts,data=query_data),meta.data=meta2)
+ref<-SetAssayData(ref,assay="RNA",layer="scale.data",new.data=ref_scale)
+query<-SetAssayData(query,assay="RNA",layer="scale.data",new.data=query_scale)
+VariableFeatures(ref)<-VariableFeatures(query)<-rownames(ref)[features]
+set.seed(42)
+ref<-RunPCA(ref,seed.use=42,verbose=FALSE);query<-RunPCA(query,seed.use=42,verbose=FALSE)
+ref<-RunUMAP(ref,dims=1:20,return.model=TRUE,seed.use=42)
+anchors<-FindTransferAnchors(reference=ref,query=query,dims=1:20,reference.reduction="pca")
+query<-MapQuery(anchorset=anchors,reference=ref,query=query,reference.dims=1:20,refdata=list(celltype="celltype"),reference.reduction="pca",reduction.model="umap")
+r<-Embeddings(ref,"umap");q<-Embeddings(query,"ref.umap");stopifnot(all(is.finite(r)),all(is.finite(q)))
+reference_table<-data.frame(cell=rownames(r),donor=sp1$donor[keep1],cohort="First IMC cohort",plotted_group=meta1$celltype,projected_annotation=NA_character_,prediction_score=NA_real_,UMAP1=r[,1],UMAP2=r[,2],coordinate_origin="Recomputed from original projection workflow",recorded_Gender=sp1$recorded_Gender[keep1])
+query_table<-data.frame(cell=rownames(q),donor=sp2$donor[keep2],cohort="Six-donor IMC validation",plotted_group=meta2$metfiblabel,projected_annotation=query$predicted.celltype,prediction_score=query$predicted.celltype.score,UMAP1=q[,1],UMAP2=q[,2],coordinate_origin="Recomputed from original projection workflow",recorded_Gender=sp2$recorded_Gender[keep2])
+dir.create(args[3],recursive=TRUE,showWarnings=FALSE)
+write.csv(rbind(reference_table,query_table),file.path(args[3],"Figure_S9D_reproduced_coordinates.csv"),row.names=FALSE)
+saveRDS(ref,file.path(args[3],"reference_seurat_with_umap_model.rds"));saveRDS(query,file.path(args[3],"validation_seurat_projected.rds"))
+writeLines(capture.output(sessionInfo()),file.path(args[3],"Projection_sessionInfo.txt"))

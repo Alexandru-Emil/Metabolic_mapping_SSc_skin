@@ -1,0 +1,179 @@
+---
+title: "Neighbourhood analysis for CosMx data - healthy and SSc"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, eval=TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# User-specified variables for loading the spe - **USER INPUTS REQUIRED** 
+
+```{r user_var_load_spe}
+# Path to the directory containing the input 'spe' files
+data_dir <- here('Datasets/')  # Specify the data directory
+
+# Name of the input 'spe' file to load
+input_spe_filename <- "spe20250127174306.rds"  # Specify the 'spe' file name
+
+# Explanations:
+# - **data_dir**: The directory where your input 'spe' files are located.
+# - **input_spe_filename**: The name of the 'spe' file to load.
+```
+# Load the spe
+
+```{r load spe}
+
+# Load the 'spe' object
+spe <- readRDS(file.path(data_dir, input_spe_filename))
+```
+
+# Other user-specified variables - **USER INPUTS REQUIRED** 
+
+```{r user_var_other}
+# Path to the directory where the spe will be saved
+output_dir <- here('Datasets/')  # Specify the output directory
+
+# Name of the cell type variable in 'spe' (e.g., "celltype")
+cat(" Choose the cell type variable from:\n")
+cat(colnames(colData(spe)), sep = "\n")
+celltype_variable <- "pheno_clusters_new2"  # Specify the cell type variable in 'spe'
+
+# Define the donor variable from the variables printed above for celltype
+donor_variable <- "patient_id"
+
+# Define the donor variable from the variables printed above for celltype
+disease_variable <- "Disease"
+
+spe[[disease_variable]] <- as.character(spe[[disease_variable]])
+
+# Define colors for disease that match the number of unique values in the disease variable
+cat("\n The number of unique values in the disease variable are:", length(unique(spe[[disease_variable]])))
+cat("\n The unique values in the disease variable are:", unique(spe[[disease_variable]]), sep = "\n")
+color_vector_disease <- c("#4DBBD533", "#E64B35AA") # Specify colors for disease; the order will match to the unique values in the disease variable
+
+nbh_selected <- "CN_10_aggNbh_delaunay_80_new"
+
+```
+
+
+# Heatmaps rescaled for neighbourhood analysis
+
+```{r neighbourhood analysis - heatmap rescaled}
+# Initialize the list to store heatmap objects
+heatmap_plot_list <- list()
+spe2 <- spe
+spe <- spe[,spe$Disease=="Healthy"] 
+#spe <- spe[,spe$Progression_skin=="progressive"]
+spe <- spe[,grepl("^str",spe[[celltype_variable]])]
+spe[[nbh_selected]] <- as.numeric(spe[[nbh_selected]])
+spe <- spe[,!spe[[nbh_selected]]%in%c(3,1,2)]
+spe[[nbh_selected]] <- as.factor(spe[[nbh_selected]])
+spe <- spe[,!spe[[celltype_variable]]%in%c("Ecad", "CD45")]
+
+# Loop over each selected neighbourhood
+for (nbh in nbh_selected) {
+  #message(paste("Processing neighbourhood:", nbh))
+  
+  # Prepare the data for plotting
+  for_plot <- prop.table(
+    table(spe[[nbh]], spe$celltype),
+    margin = 1
+  ) %>% pheatmap:::scale_mat(scale = "column")
+  
+  #message("  Prepared for_plot data.")
+  
+  # Check the structure of for_plot
+  #print(head(for_plot))
+  
+  # Create the heatmap plot and store the object
+  heatmap_plot <- tryCatch({
+    #scaled_data <- scale(for_plot, center = TRUE, scale = TRUE)
+    #scaled_data <- pmax(pmin(scaled_data, 3), -3)
+    pheatmap(
+      for_plot,
+      #cluster_cols = FALSE,
+      cluster_rows = FALSE,
+      color = colorRampPalette(c("dark blue", "white", "dark red"))(100),
+      #breaks = seq(-3, 3, length.out = 101),
+      scale = "column",
+      main = paste0("Heatmap for ", nbh)
+    )
+  }, error = function(e) {
+    message(paste("Error generating heatmap for neighbourhood:", nbh))
+    message(e$message)
+    return(NULL)
+  })
+  
+  # Check if pheatmap succeeded
+  if (is.null(heatmap_plot)) {
+    next  # Skip to the next iteration if there was an error
+  }
+  
+  #message("  Generated pheatmap.")
+  
+  # Store the pheatmap object in the list
+  heatmap_plot_list[[nbh]] <- heatmap_plot
+}
+
+spe <- spe2
+rm(spe2)
+```
+
+# Display the neighbourhood heatmaps rescaled
+
+```{r display neighbourhood heatmaps rescaled, fig.width=7, fig.height=7}
+# Loop over each stored heatmap object and plot it
+for (nbh in names(heatmap_plot_list)) {
+  cat("## ", nbh, "\n\n")
+  print(heatmap_plot_list[[nbh]])
+  cat("\n\n")
+}
+```
+
+```{r display neighbourhood heatmaps nice, fig.width=4, fig.height=4, results='asis'}
+# Loop over each stored heatmap object and plot it
+for (nbh in names(heatmap_plot_list)) {
+  cat("## ", nbh, "\n\n")
+  print(heatmap_plot_list[[nbh]])
+  cat("\n\n")
+}
+```
+
+
+
+# Outputs
+
+This analysis generates the following results: <br>
+1. It creates heatmaps for the neighbourhood analysis. <br>
+
+# Session information
+
+```{r session}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

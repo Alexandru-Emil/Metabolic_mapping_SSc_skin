@@ -1,0 +1,469 @@
+---
+title: "Reproducible MintFlow Xenium Workflow: Met_hi_Fib Perturbation and EC Response"
+author: "Generated workflow documentation"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    code_folding: show
+params:
+  run_heavy: false
+  run_render_steps: false
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  error = FALSE,
+  comment = "#>"
+)
+
+workdir <- project_path("external/mintflow_xenium_training")
+final_dir <- file.path(workdir, "perturb_met_hi_fib_ec_with_frequency_dotplots")
+base_perturb_dir <- file.path(workdir, "perturb_met_hi_fib_ec")
+
+sfe_rds <- project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds")
+imc_spe_rdata <- project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData")
+
+bundle_dir <- file.path(workdir, "anndata_bundle_combined_fib_ec")
+h5ad_file <- file.path(workdir, "xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad")
+mintflow_env_python <- project_path("external/python")
+checkpoint <- file.path(workdir, "outputs_combined_fib_ec", "checkpoint_final.pt")
+source_report <- file.path(base_perturb_dir, "mintflow_met_hi_fib_perturbation_ec_report.html")
+final_report <- file.path(final_dir, "mintflow_met_hi_fib_perturbation_ec_report_with_frequency_dotplots.html")
+
+scripts <- list(
+  export_sfe = file.path(workdir, "export_sfe_for_anndata_combined_fib_ec.R"),
+  h5ad = file.path(workdir, "make_h5ad_from_export.py"),
+  train = file.path(workdir, "train_mintflow_xenium.py"),
+  perturb = file.path(workdir, "perturb_met_hi_fib_ec_analysis.py"),
+  dotplot_report = file.path(workdir, "make_perturb_report_with_frequency_dotplots.py"),
+  highres_maps = file.path(workdir, "make_highres_tissue_maps_for_dotplot_report.py")
+)
+
+show_file <- function(path, n = Inf) {
+  x <- readLines(path, warn = FALSE)
+  if (is.finite(n)) x <- head(x, n)
+  cat(paste(x, collapse = "\n"))
+}
+
+show_source_block <- function(path, lang = "text") {
+  x <- paste(readLines(path, warn = FALSE), collapse = "\n")
+  cat(sprintf("<pre><code class=\"language-%s\">", lang))
+  cat(htmltools::htmlEscape(x))
+  cat("</code></pre>")
+}
+
+file_table <- function(paths) {
+  info <- file.info(paths)
+  data.frame(
+    file = paths,
+    exists = file.exists(paths),
+    size_mb = round(info$size / 1024^2, 3),
+    modified = as.character(info$mtime),
+    row.names = NULL
+  )
+}
+```
+
+# Purpose
+
+This RMarkdown documents the complete workflow used to obtain:
+
+`r final_report`
+
+The workflow starts from a Xenium `SpatialFeatureExperiment` object and an IMC `SingleCellExperiment` object, transfers fibroblast and endothelial metabolic annotations into the Xenium data, trains MintFlow, performs in silico perturbations of `Met_hi_Fib`, and generates the final EC-response report with frequency-colored dot plots and high-resolution tissue maps.
+
+By default, this document renders in audit mode. It checks existing inputs/outputs and prints all reproducibility commands, but it does not rerun the computationally heavy MintFlow training or generation steps. To rerun heavy steps during rendering, render with `params = list(run_heavy = TRUE)`. To also rerun the final lightweight report/plot post-processing chunks during rendering, use `params = list(run_render_steps = TRUE)`.
+
+# Directory Layout and Inputs
+
+```{r paths}
+critical_files <- c(
+  sfe_rds,
+  imc_spe_rdata,
+  scripts$export_sfe,
+  scripts$h5ad,
+  scripts$train,
+  scripts$perturb,
+  scripts$dotplot_report,
+  scripts$highres_maps,
+  h5ad_file,
+  checkpoint,
+  source_report,
+  final_report
+)
+file_table(critical_files)
+```
+
+The main workflow directory is:
+
+```{r workdir-list}
+list.files(workdir, full.names = TRUE)
+```
+
+The final result directory is:
+
+```{r final-dir-list}
+final_files <- list.files(final_dir, full.names = TRUE)
+file_table(final_files)
+```
+
+# Software Environment
+
+MintFlow was run from the Python virtual environment at `/tmp/mintflow_venv`. The R conversion step requires Bioconductor classes for spatial single-cell objects. The exact environment can be checked with:
+
+```{bash check-env, eval=FALSE}
+python - <<'PY'
+import sys
+print(sys.executable)
+for pkg in ["anndata", "scanpy", "squidpy", "mintflow", "torch", "sklearn", "pandas", "numpy", "matplotlib", "seaborn"]:
+    try:
+        mod = __import__(pkg)
+        print(pkg, getattr(mod, "__version__", "version not exposed"))
+    except Exception as exc:
+        print(pkg, "NOT AVAILABLE", exc)
+PY
+
+Rscript -e 'pkgs <- c("SpatialFeatureExperiment","SingleCellExperiment","SummarizedExperiment","Matrix","rmarkdown","knitr"); print(setNames(pkgs %in% rownames(installed.packages()), pkgs)); sessionInfo()'
+```
+
+The local requirements snapshot used while creating the MintFlow environment is:
+
+```{r requirements, results='asis'}
+req <- file.path(workdir, "requirements_mintflow_tmp_env.txt")
+if (file.exists(req)) {
+  cat("```text\n")
+  cat(paste(readLines(req, warn = FALSE), collapse = "\n"))
+  cat("\n```\n")
+} else {
+  cat("No requirements snapshot found at ", req, "\n")
+}
+```
+
+# Step 1: Export the SFE and Transfer IMC-Derived Labels
+
+This step reads the Xenium SFE and the IMC SPE. It transfers metabolic fibroblast and endothelial annotations from the IMC object to Xenium using `KEY`:
+
+`Met_hi_Fib`: IMC `Rphenograph_500` clusters `1` or `2`
+
+`Other_Fib`: IMC `Rphenograph_500` cluster `3`
+
+`Met_hi_EC`: IMC `Rphenograph_200EC` clusters `1` or `2`
+
+`Met_int_EC`: IMC `Rphenograph_200EC` cluster `3`
+
+The combined label used for MintFlow is `combined_met_label`, prioritizing fibroblast labels if a cell has both fibroblast and EC labels. The script writes a Matrix Market bundle to `anndata_bundle_combined_fib_ec`:
+
+`counts_genes_by_cells.mtx`: sparse count matrix, genes by cells
+
+`obs.csv`: cell metadata including transferred labels, coordinates, sample, and annotation columns
+
+`var.csv`: gene metadata
+
+```{bash export-sfe, eval=params$run_heavy}
+Rscript inputs/mintflow/export_sfe_for_anndata_combined_fib_ec.R \
+  "inputs/Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds" \
+  "inputs/Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData" \
+  inputs/mintflow/anndata_bundle_combined_fib_ec
+```
+
+```{r export-bundle-check}
+bundle_files <- file.path(bundle_dir, c("counts_genes_by_cells.mtx", "obs.csv", "var.csv"))
+file_table(bundle_files)
+
+if (file.exists(file.path(bundle_dir, "obs.csv"))) {
+  obs <- read.csv(file.path(bundle_dir, "obs.csv"), check.names = FALSE)
+  print(table(obs$combined_met_label, useNA = "ifany"))
+  print(table(obs$metfiblabel, useNA = "ifany"))
+  print(table(obs$metEClabel, useNA = "ifany"))
+}
+```
+
+# Step 2: Convert the Export Bundle to AnnData
+
+MintFlow expects AnnData input. The Python conversion script reads the Matrix Market bundle, transposes the count matrix to cells by genes, keeps the relevant metadata, stores Xenium centroids as `obsm["spatial"]`, and writes:
+
+`inputs/mintflow/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad`
+
+```{bash make-h5ad, eval=params$run_heavy}
+python inputs/mintflow/make_h5ad_from_export.py \
+  --bundle-dir inputs/mintflow/anndata_bundle_combined_fib_ec \
+  --out inputs/mintflow/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad
+```
+
+```{bash inspect-h5ad, eval=FALSE}
+python - <<'PY'
+import anndata as ad
+adata = ad.read_h5ad("inputs/mintflow/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad")
+print(adata)
+print(adata.obs["combined_met_label"].value_counts(dropna=False))
+print(adata.obs[["cell_id","sample_id","combined_met_label","metfiblabel","metEClabel","x_centroid","y_centroid"]].head())
+PY
+```
+
+# Step 3: Train MintFlow
+
+The model was trained using `combined_met_label` as the cell-type label, so MintFlow learned a spatial generative model with these four relevant metabolic cell states:
+
+`Met_hi_Fib`, `Other_Fib`, `Met_hi_EC`, `Met_int_EC`
+
+Training outputs were written to:
+
+`inputs/mintflow/outputs_combined_fib_ec`
+
+The training script saves predictions, optional evaluation files, epoch checkpoints, and the final checkpoint:
+
+`checkpoint_final.pt`
+
+```{bash train-mintflow, eval=params$run_heavy}
+python inputs/mintflow/train_mintflow_xenium.py \
+  --h5ad inputs/mintflow/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad \
+  --outdir inputs/mintflow/outputs_combined_fib_ec \
+  --obskey-cell-type combined_met_label \
+  --epochs 20 \
+  --width-window 100
+```
+
+```{r training-output-check}
+train_files <- list.files(file.path(workdir, "outputs_combined_fib_ec"), full.names = TRUE)
+file_table(train_files)
+```
+
+# Step 4: MintFlow In Silico Perturbation
+
+The perturbation analysis used the trained checkpoint and created three versions of the same tissue:
+
+`baseline`: the original Xenium AnnData with all labels unchanged
+
+`remove_Met_hi_Fib`: all `Met_hi_Fib` cells removed before generating expression
+
+`replace_Met_hi_Fib_with_Other_Fib`: all `Met_hi_Fib` cells relabeled to `Other_Fib` before generating expression
+
+For each scenario, the script recomputes a spatial neighbor graph and calls `mintflow.generate_insilico_ST_data` using the trained model. Five generated realizations are averaged through the `MintFLow_Generated_Xmic` arrays.
+
+The command below is the command encoded in the original report. `--reuse-generations` means the large generation pickles are reused when present instead of regenerated:
+
+```{bash perturb-analysis, eval=params$run_heavy}
+python inputs/mintflow/perturb_met_hi_fib_ec_analysis.py \
+  --h5ad inputs/mintflow/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad \
+  --checkpoint inputs/mintflow/outputs_combined_fib_ec/checkpoint_final.pt \
+  --outdir inputs/mintflow/perturb_met_hi_fib_ec \
+  --num-realisations 5 \
+  --n-neighs 5 \
+  --reuse-generations
+```
+
+Main intermediate files saved by this step:
+
+`generation_baseline.pkl`: MintFlow generated baseline realizations and MCC arrays
+
+`generation_remove_Met_hi_Fib.pkl`: MintFlow generated perturbation with `Met_hi_Fib` removed
+
+`generation_replace_Met_hi_Fib_with_Other_Fib.pkl`: MintFlow generated perturbation with `Met_hi_Fib` replaced by `Other_Fib`
+
+`ec_cell_level_perturbation_results.csv`: one row per EC per scenario, with predicted EC state, probability, generated scores, and MCC-change flag
+
+`ec_state_frequency_among_all_ecs.csv`: EC-state frequencies used for the main frequency plots
+
+`ec_summary_perturbation_results.csv`: per original EC label summary
+
+`ec_sample_level_perturbation_results.csv`: per sample and original EC label summary
+
+`ec_classifier_report.json`: logistic-regression classifier performance on baseline generated EC expression
+
+`score_genes_used.json`: Xenium genes used in generated-expression score calculations
+
+```{r perturb-output-check}
+perturb_files <- list.files(base_perturb_dir, full.names = TRUE)
+file_table(perturb_files)
+```
+
+## EC Classifier and Frequency Logic
+
+MintFlow keeps the supplied cell-type labels fixed during generation. To estimate whether generated EC expression resembles `Met_hi_EC` or `Met_int_EC`, the analysis trains a logistic regression classifier on baseline generated EC expression using the original transferred `metEClabel`. The classifier is then applied to generated EC expression in each perturbation scenario.
+
+The main frequency table reports predicted EC-state composition among all ECs. This is why baseline is approximately `52.5% Met_hi_EC` and `47.5% Met_int_EC`, rather than a forced `100% / 0%` split.
+
+```{r ec-frequency-table}
+freq <- read.csv(file.path(final_dir, "ec_state_frequency_among_all_ecs.csv"))
+freq
+```
+
+```{r classifier-report}
+jsonlite_available <- requireNamespace("jsonlite", quietly = TRUE)
+if (jsonlite_available) {
+  jsonlite::fromJSON(file.path(final_dir, "ec_classifier_report.json"))
+} else {
+  cat(readLines(file.path(final_dir, "ec_classifier_report.json")), sep = "\n")
+}
+```
+
+# Step 5: Add Frequency-Colored Dot Plots and Write the Final HTML
+
+The original perturbation report contained bar plots. The final report folder was generated by copying the non-generation outputs from `perturb_met_hi_fib_ec` to `perturb_met_hi_fib_ec_with_frequency_dotplots`, then adding a matrix-style dot plot where dot color encodes EC-state frequency.
+
+This script writes:
+
+`ec_state_frequency_among_all_ecs_pairwise_dotplot.pdf`
+
+`ec_state_frequency_among_all_ecs_pairwise_dotplot.png`
+
+`mintflow_met_hi_fib_perturbation_ec_report_with_frequency_dotplots.html`
+
+```{bash frequency-dotplot-report, eval=params$run_render_steps}
+python inputs/mintflow/make_perturb_report_with_frequency_dotplots.py
+```
+
+```{r final-report-check}
+file_table(c(
+  final_report,
+  file.path(final_dir, "ec_state_frequency_among_all_ecs_pairwise_dotplot.pdf"),
+  file.path(final_dir, "ec_state_frequency_among_all_ecs_pairwise_dotplot.png")
+))
+```
+
+```{r show-dotplot, out.width='100%'}
+knitr::include_graphics(file.path(final_dir, "ec_state_frequency_among_all_ecs_pairwise_dotplot.png"))
+```
+
+# Step 6: Generate High-Resolution Tissue Map Exports
+
+The final folder also contains larger tissue-map exports for cropping. These maps are regenerated from the original H5AD plus `ec_cell_level_perturbation_results.csv`, not from a new MintFlow generation. The script reconstructs the three scenario tissues and merges EC probabilities from the saved cell-level table.
+
+The script writes both PDF and 600 DPI PNG outputs:
+
+`tissue_maps_celltype_perturbations_highres.pdf/png`
+
+`tissue_maps_ec_met_hi_probability_highres.pdf/png`
+
+`tissue_maps_met_hi_ec_met_hi_probability_highres.pdf/png`
+
+`tissue_maps_met_int_ec_met_hi_probability_highres.pdf/png`
+
+```{bash highres-maps, eval=params$run_render_steps}
+python inputs/mintflow/make_highres_tissue_maps_for_dotplot_report.py
+```
+
+```{r highres-check}
+highres_files <- list.files(final_dir, pattern = "highres\\.(pdf|png)$", full.names = TRUE)
+file_table(highres_files)
+```
+
+# Final Output Files
+
+The target output HTML is:
+
+```{r final-html-exists}
+file_table(final_report)
+```
+
+Key final plots and tables:
+
+```{r key-final-files}
+key_outputs <- file.path(final_dir, c(
+  "ec_cell_level_perturbation_results.csv",
+  "ec_state_frequency_among_all_ecs.csv",
+  "ec_summary_perturbation_results.csv",
+  "ec_sample_level_perturbation_results.csv",
+  "ec_state_frequency_among_all_ecs_pairwise.pdf",
+  "ec_state_frequency_among_all_ecs_pairwise_dotplot.pdf",
+  "tissue_maps_celltype_perturbations_highres.pdf",
+  "tissue_maps_ec_met_hi_probability_highres.pdf",
+  "tissue_maps_met_hi_ec_met_hi_probability_highres.pdf",
+  "tissue_maps_met_int_ec_met_hi_probability_highres.pdf"
+))
+file_table(key_outputs)
+```
+
+# Reproducibility Commands as One Shell Script
+
+The commands below reproduce the workflow from exported labels through the final report. Remove `--reuse-generations` if the MintFlow in silico perturbations should be regenerated from scratch.
+
+```{bash full-workflow-script, eval=FALSE}
+set -euo pipefail
+
+WORKDIR="inputs/mintflow"
+PY="python"
+SFE="inputs/Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds"
+SPE="inputs/Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"
+
+Rscript "$WORKDIR/export_sfe_for_anndata_combined_fib_ec.R" \
+  "$SFE" \
+  "$SPE" \
+  "$WORKDIR/anndata_bundle_combined_fib_ec"
+
+"$PY" "$WORKDIR/make_h5ad_from_export.py" \
+  --bundle-dir "$WORKDIR/anndata_bundle_combined_fib_ec" \
+  --out "$WORKDIR/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad"
+
+"$PY" "$WORKDIR/train_mintflow_xenium.py" \
+  --h5ad "$WORKDIR/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad" \
+  --outdir "$WORKDIR/outputs_combined_fib_ec" \
+  --obskey-cell-type combined_met_label \
+  --epochs 20 \
+  --width-window 100
+
+"$PY" "$WORKDIR/perturb_met_hi_fib_ec_analysis.py" \
+  --h5ad "$WORKDIR/xenium_sfe_09032026_combined_fib_ec_metlabel.h5ad" \
+  --checkpoint "$WORKDIR/outputs_combined_fib_ec/checkpoint_final.pt" \
+  --outdir "$WORKDIR/perturb_met_hi_fib_ec" \
+  --num-realisations 5 \
+  --n-neighs 5 \
+  --reuse-generations
+
+"$PY" "$WORKDIR/make_perturb_report_with_frequency_dotplots.py"
+"$PY" "$WORKDIR/make_highres_tissue_maps_for_dotplot_report.py"
+```
+
+# Source Code Appendix
+
+The following chunks print the exact scripts used by the workflow. They are included here so the RMarkdown report is self-contained documentation of the shell, R, and Python code used.
+
+## R: Export SFE and Transfer IMC Labels
+
+```{r source-export-sfe, results='asis'}
+show_source_block(scripts$export_sfe, "r")
+```
+
+## Python: Build AnnData
+
+```{r source-h5ad, results='asis'}
+show_source_block(scripts$h5ad, "python")
+```
+
+## Python: Train MintFlow
+
+```{r source-train, results='asis'}
+show_source_block(scripts$train, "python")
+```
+
+## Python: In Silico Perturbation Analysis
+
+```{r source-perturb, results='asis'}
+show_source_block(scripts$perturb, "python")
+```
+
+## Python: Final Frequency-Colored Dot Plot Report
+
+```{r source-dotplot-report, results='asis'}
+show_source_block(scripts$dotplot_report, "python")
+```
+
+## Python: High-Resolution Map Exports
+
+```{r source-highres, results='asis'}
+show_source_block(scripts$highres_maps, "python")
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

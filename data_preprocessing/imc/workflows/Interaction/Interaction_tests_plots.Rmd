@@ -1,0 +1,448 @@
+---
+title: "Interaction analysis"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+
+```
+
+# Load spe
+
+```{r load spe}
+spe <- readRDS(here("Datasets/spe_20241027185617.rds"))
+```
+
+# Prepare spe for analysis
+
+```{r prep spe}
+# Create a new data frame with all the colData of the spe object - to recode the patient_id column
+
+metadata <- colData(spe)
+
+# add a new column to metadata called Donor where you recode the patient_id column
+# the elements starting with NH should be called Healthy1, Healthy2, etc.
+# the elements starting with SSc should be called SSc1, SSc2, etc.
+metadata$Donor <- dplyr::recode(metadata$patient_id,
+                                     Healthy1="Healthy1",
+                                     Healthy2="Healthy2", 
+                                     SSc1="SSc1",
+                                     SSc2="SSc2",
+                                     SSc3="SSc3",
+                                     SSc4="SSc4",
+                                     SSc5="SSc5",
+                                     SSc6="SSc6",
+                                     SSc7="SSc7",
+                                     SSc8="SSc8",
+                                     Healthy3="Healthy3",
+                                     Healthy4="Healthy4",
+                                     SSc9="SSc9",
+                                     Healthy5="Healthy5",
+                                     Healthy6="Healthy6",
+                                     Healthy7="Healthy7")
+
+
+metadata$Disease <- dplyr::recode(metadata$indication,
+                                  NH="Healthy",
+                                  SSc="SSc")
+
+metadata$ILD <- dplyr::recode(metadata$ILD,
+                                     healthy="healthy",
+                                     "1"="ILD", 
+                                     "0"="no ILD")
+
+metadata$Arthritis[is.na(metadata$Arthritis)] <- "no arthritis"
+
+# Assign the new column in metadata to the spe object
+spe$Donor <- metadata$Donor
+spe$ILD <- metadata$ILD
+spe$Arthritis <- metadata$Arthritis
+spe$Disease <- metadata$Disease
+
+names(colData(spe))[which(names(colData(spe))=="Skin.progression.at.biopsy")]="Progression_skin"
+names(colData(spe))[which(names(colData(spe))=="Subtype.(dc/lc)")]="Subtype_dc_lc"
+
+met_markers <- c("Glut1",
+                 "HK1",
+                 "PFKL1",
+                 "PKM2",
+                 "LDHA",
+                 "GAPDH",
+                 "CS",
+                 "OGDH",
+                 "ATP5A",
+                 "SDHA",
+                 "CD98",
+                 "ACAC",
+                 "CPT1a",
+                 "G6PD",
+                 "p_mTOR",
+                 "pAMPK",
+                 "NOX4",
+                 "HIF1a",
+                 "PGC-1a",
+                 "TFAM",
+                 "NRF2_p")
+
+glycolysis_markers <- c("Glut1",
+                 "HK1",
+                 "PFKL1",
+                 "PKM2",
+                 "LDHA",
+                 "GAPDH")
+
+no_met_markers <- setdiff(rownames(spe),met_markers) 
+rowData(spe)$use_channel_met_markers <- rownames(spe) %in% met_markers
+rowData(spe)$use_channel_glyc_markers <- rownames(spe) %in% glycolysis_markers
+
+# define clinical categories
+clinical_cat <- c("Disease","Progression_skin", "Arthritis", "DU.history", "ILD", "Subtype_dc_lc", "Early.or.not")
+
+spe[[clinical_cat[1]]] <- factor(spe[[clinical_cat[1]]], levels = c("Healthy", "SSc"))
+spe[[clinical_cat[2]]] <- factor(spe[[clinical_cat[2]]], levels = c("healthy", "progressive", "stable"))
+spe[[clinical_cat[3]]] <- factor(spe[[clinical_cat[3]]], levels = c("healthy","arthritis","no arthritis"))
+spe[[clinical_cat[4]]] <- factor(spe[[clinical_cat[4]]], levels = c("healthy","DU history","no DU history"))
+spe[[clinical_cat[5]]] <- factor(spe[[clinical_cat[5]]], levels = c("healthy","ILD","no ILD"))
+spe[[clinical_cat[6]]] <- factor(spe[[clinical_cat[6]]], levels = c("healthy","dcSSc","lcSSc"))
+spe[[clinical_cat[7]]] <- factor(spe[[clinical_cat[7]]], levels = c("healthy","early","late"))
+
+# define color vectors
+color_vectors <- list()
+pheno_clusters_new <- setNames(c("#C4281C","#C2DAB8","#E8BAC8","#80BBDB","#C470A0","#0D69AC","#F5CD30","#287F47",
+                                 "#A05F35","#D9856C","#6B327C","#008F9C","#C7D23C","#B7D7D5","#923978","#27462D",
+                                 "#FF9494","#938767","#FFF67B","#E1A4C2","#FC7B1B","#CD6298","#102ADC"), 
+                               as.character(unique(spe$pheno_clusters_new)))
+
+indication <- setNames(c("#4DBBD533", "#E64B35AA"),
+                       c(unique(colData(spe)$Disease)))
+
+Donor <- setNames(c("#FFFF33", "#FFCC66",'#FF9933','#FF6633','#00FFFF','#FF0033','#79B5B5', '#C470A0',
+                         '#996633','#999933','#99CC33','#FF9494', '#33FF33','#336633', '#330066','#923978'),
+                       c(unique(colData(spe)$Donor)))
+
+Neighbourhood_del_80_pheno_new <- setNames(c("#CC00CC", "#260EEC", "#FFCA28", "#004D40","#FF6633","#66FF66", 
+                                             "#EF9EA7", "#990000", "#CC0033","#4FC3F7"),
+                                           unique(spe$Neighbourhood_del_80_pheno_new))
+
+color_vectors$clusters <- pheno_clusters_new
+color_vectors$Disease <- indication
+color_vectors$Donor <- Donor
+color_vectors$neighbourhood_del_80_pheno_new <- Neighbourhood_del_80_pheno_new
+
+color_vectors[[clinical_cat[2]]] <- setNames(c("#4DBBD533", "#C03830", "#F6BF93"), unique(spe[[clinical_cat[2]]]))
+color_vectors[[clinical_cat[3]]] <- setNames(c("#4DBBD533","#377EB8","#4DAF4A"), unique(spe[[clinical_cat[3]]]))
+color_vectors[[clinical_cat[4]]] <- setNames(c("#4DBBD533","#FC8D62","#8DA0CB"), unique(spe[[clinical_cat[4]]]))
+color_vectors[[clinical_cat[5]]] <- setNames(c("#4DBBD533","#FFFFB3","#BEBADA"), unique(spe[[clinical_cat[5]]]))
+color_vectors[[clinical_cat[6]]] <- setNames(c("#4DBBD533","#A6D854","#FFD92F"), unique(spe[[clinical_cat[6]]]))
+color_vectors[[clinical_cat[7]]] <- setNames(c("#4DBBD533","#F781BF","#999999"), unique(spe[[clinical_cat[7]]]))
+
+metadata(spe)$colors_vectors$Progression_skin <- setNames(c("#6CC3F4", "#C03830", "#F6BF93"),
+                                                          unique(spe$Progression_skin))
+
+metadata(spe)$color_vectors <- color_vectors
+
+rm(metadata)
+
+unique(spe$pheno_clusters_new)
+
+spe$pheno_clusters_new2 <- case_when(
+  grepl("CD45_CD3",spe$pheno_clusters_new) ~ "CD45",
+  TRUE ~ spe$pheno_clusters_new
+)
+
+spe$pheno_clusters_new2 <- recode(
+  spe$pheno_clusters_new2,
+  "CD31_1" = "Met<sup>low</sup>_EC",
+  "CD31_2" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_EC",
+  "CD31_3" = "Met<sup>hi</sup>_EC",
+  "CD31_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "CD31_5" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "CD45_CD68_1" = "Met<sup>hi</sup>_Mf",
+  "CD45_CD68_2" = "Met<sup>low</sup>_Mf",
+  "CD45_CD68_3" = "Glycolysis<sup>low</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "CD45_CD68_4" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "stromal_1" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_2" = "Met<sup>hi</sup>_Fib",
+  "stromal_3" = "TCA/OXPHOS<sup>int</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "stromal_5" = "Met<sup>low</sup>_Fib",
+  "stromal_6" = "Glycolysis<sup>int</sup><br>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "stromal_7" = "Glut<sup>hi</sup>_Fib",
+  "stromal_8" = "Glycolysis<sup>int</sup><br>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+unique(spe$pheno_clusters_new2)
+```
+
+
+# Create R interaction dotplot
+
+```{r interaction-dotplot, echo=TRUE, fig.width=30, fig.height=12}
+library(ggsci)
+
+interaction_all <- metadata(spe)$interaction_test_1$results 
+interaction_all$from_label <- case_when(
+  grepl("^CD45_CD3", interaction_all$from_label) ~ "CD45",
+  TRUE ~ interaction_all$from_label
+)
+
+interaction_all$to_label <- case_when(
+  grepl("^CD45_CD3", interaction_all$to_label) ~ "CD45",
+  TRUE ~ interaction_all$to_label
+)
+
+interact.summary <- interaction_all  %>%
+  group_by(Progression_skin, from_label, to_label) %>%
+  summarize(MeanSig = mean(sigval, na.rm = TRUE)) %>%
+  mutate(
+    InteractType = case_when(MeanSig > 0 ~ 'Attraction', MeanSig < 0 ~ 'Avoidance', .default = 'NoInteraction')
+  ) %>%
+  mutate(AbsMeanSig = abs(MeanSig))
+
+#Plot interaction split in healthy, progressive and stable SSc
+ggplot(interact.summary) +
+  geom_point(aes(
+    x = to_label,
+    y = from_label,
+    size = AbsMeanSig,
+    color = InteractType
+  )) +
+  facet_wrap( ~ Progression_skin) +
+  theme_light() +
+  theme(panel.grid  = element_blank()) +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  )) +
+  scale_color_manual(values = c(
+    'Attraction' = '#E64B35CC',
+    'Avoidance' = '#4DBBD577'
+  )) +
+  scale_size_continuous(range = c(0, 10), limits = c(0.05, 1))
+
+#Plot interaction split in progressive and stable SSc
+ggplot(interact.summary %>% filter(Progression_skin != "healthy")) +
+  geom_point(aes(
+    x = to_label,
+    y = from_label,
+    size = AbsMeanSig,
+    color = InteractType
+  )) +
+  facet_wrap( ~ Progression_skin) +
+  theme_light() +
+  theme(panel.grid  = element_blank()) +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  )) +
+  scale_color_manual(values = c(
+    'Attraction' = '#E64B35CC',
+    'Avoidance' = '#4DBBD577'
+  )) +
+  scale_size_continuous(range = c(0, 10), limits = c(0.05, 1))
+
+# Plot interaction split in healthy and SSc
+ggplot(interact.summary %>% mutate(
+  Healthy_SSc = case_when(
+    Progression_skin %in% c("stable", "progressive") ~ "SSc",
+    TRUE ~ "Healthy"
+  )
+)) +
+  geom_point(aes(
+    x = to_label,
+    y = from_label,
+    size = AbsMeanSig,
+    color = InteractType
+  )) +
+  facet_wrap( ~ Healthy_SSc) +
+  theme_light() +
+  theme(panel.grid  = element_blank()) +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  )) +
+  scale_color_manual(values = c(
+    'Attraction' = '#E64B35CC',
+    'Avoidance' = '#4DBBD577'
+  )) +
+  scale_size_continuous(range = c(0, 10), limits = c(0.05, 1))
+```
+
+```{r interaction-graph, echo=TRUE, fig.width=12, fig.height=8}
+
+met_markers <- c(
+  "Glut1",
+  "HK1",
+  "PFKL1",
+  "PKM2",
+  "LDHA",
+  "GAPDH",
+  "CS",
+  "OGDH",
+  "ATP5A",
+  "SDHA",
+  "CD98",
+  "ACAC",
+  "CPT1a",
+  "G6PD",
+  "p_mTOR",
+  "pAMPK",
+  "NOX4",
+  "HIF1a",
+  "PGC-1a",
+  "TFAM",
+  "NRF2_p"
+)
+
+no_met_markers <- setdiff(rownames(spe), met_markers)
+rowData(spe)$use_channel_met_markers <- rownames(spe) %in% met_markers
+
+spe_use <- spe[rownames(spe[rowData(spe)$use_channel_met_markers])]
+spe_use <- spe_use[, !spe_use$pheno_clusters_new2 %in% c("CD45", "Ecad")]
+
+expression_data <- as.data.frame(t(assay(spe_use, "z-rescaled_new")))
+expression_data$Donor <- colData(spe_use)$Donor
+expression_data$Disease <- colData(spe_use)$indication
+expression_data$Clusters <- colData(spe_use)$pheno_clusters_new2
+#expression_data <- expression_data %>% filter (grepl("^str",Clusters))
+
+exprs_median = expression_data %>% group_by(Clusters) %>%
+  select(-Donor, -Disease, -Clusters) %>%
+  summarise(across(everything(), median, na.rm = TRUE))
+
+head(exprs_median)
+
+X_all = exprs_median[, c(-1)]
+set.seed(2062)
+tsne = Rtsne((X_all),
+             dims = 2,
+             verbose = TRUE,
+             check_duplicates = F,
+             perplexity = 5
+)
+tsne_plot <- data.frame(x = tsne$Y[, 1], y = tsne$Y[, 2])
+ggplot(tsne_plot) + geom_point(aes(x = x, y = y))  + theme_classic()
+
+interact.graph <- interact.summary %>% filter (!from_label %in% c("CD45", "Ecad"),!to_label %in% c("CD45", "Ecad"))
+
+interact.graph <- interact.graph %>% filter (grepl("^str",from_label))
+# Setting AbsMeanSig to 0 if to_label is not a certain population
+interact.graph$AbsMeanSig <- ifelse(grepl("^CD31", interact.graph$to_label), interact.graph$AbsMeanSig, 0)
+
+freq <- dittoSeq::dittoBarPlot(spe,
+                               var = "pheno_clusters_new2",
+                               group.by = "indication",
+                               data.out = TRUE)$data
+
+interact.graph$from <- interact.graph$from_label
+interact.graph$to <- interact.graph$to_label
+
+## aggregate directional data int undirectional
+interact.graph$from <- interact.graph$from_label
+interact.graph$to <- interact.graph$to_label
+# remove bidirectional
+interact.graph <- interact.graph %>%
+  mutate(pair = pmin(from, to),  # Create a pair column that orders 'from' and 'to'
+         pair_rev = pmax(from, to)) %>%  # Create the reverse pair for comparison
+  group_by(Progression_skin, pair, pair_rev) %>%
+  slice(which.max(AbsMeanSig)) %>%  # Keeps the row with the largest AbsMeanSig
+  ungroup() %>%
+  select(-pair, -pair_rev)
+
+graph <- as_tbl_graph(interact.graph, directed = FALSE)
+
+ggraph(graph, tsne_plot) +
+  geom_edge_fan(aes(color = factor(InteractType), width = AbsMeanSig), show.legend = TRUE) +
+  scale_edge_width_continuous(range = c(0.5, 3), limits = c(0.3, 1)) +
+  scale_edge_color_manual(values = c(
+    'Attraction' = '#E64B35AA',
+    'Avoidance' = '#4DBBD533'
+  )) +
+  geom_node_point(aes(color = name), size = 6) +
+  scale_color_manual(values = metadata(spe)$color_vectors$clusters) +
+  # Node labels with Markdown support
+  geom_node_text(
+    aes(label = name),
+    size = 3,                  # Adjust text size as needed
+    family = "Arial",          # Choose a suitable font family
+    repel = TRUE,              # Optional: to avoid label overlap
+    show.legend = FALSE        # Hide legend for text labels
+  ) +
+  theme_light() +
+  theme(panel.grid  = element_blank(),
+            # Enable Markdown rendering for all text elements
+    text = element_markdown()) +
+  facet_edges( ~ Progression_skin)
+
+interact.graph2 <- interact.graph %>% mutate(Healthy_SSc = case_when(
+  Progression_skin %in%
+    c("stable", "progressive") ~ "SSc",
+  TRUE ~ "Healthy"
+))
+graph2 <- as_tbl_graph(interact.graph2, directed = FALSE)
+
+ggraph(graph2, tsne_plot) +
+  geom_edge_fan(aes(color = factor(InteractType), width = AbsMeanSig), show.legend = TRUE) +
+  scale_edge_width_continuous(range = c(0.5, 3), limits = c(0.3, 1)) +
+  scale_edge_color_manual(values = c(
+    'Attraction' = '#E64B35AA',
+    'Avoidance' = '#4DBBD533'
+  )) +
+  geom_node_point(aes(color = name), size = 6) +
+  scale_color_manual(values = metadata(spe)$color_vectors$clusters) +
+  # Node labels with Markdown support
+  geom_node_text(
+    aes(label = name),
+    size = 3,                  # Adjust text size as needed
+    family = "Arial",          # Choose a suitable font family
+    repel = TRUE,              # Optional: to avoid label overlap
+    show.legend = FALSE        # Hide legend for text labels
+  ) +
+  theme_light() +
+  theme(panel.grid  = element_blank(),
+            # Enable Markdown rendering for all text elements
+    text = element_markdown()) +
+  facet_edges( ~ Healthy_SSc)
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Plots of interaction tests, as dot plots and as graphs. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```
+

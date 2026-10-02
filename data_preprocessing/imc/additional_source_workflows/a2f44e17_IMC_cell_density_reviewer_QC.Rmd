@@ -1,0 +1,320 @@
+---
+title: "IMC cell-density control analysis"
+subtitle: "Reviewer response for metabolic profiles around Met_hi_Fib"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    number_sections: false
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+report_dir <- normalizePath(
+  dirname(knitr::current_input(dir = TRUE)),
+  winslash = "/",
+  mustWork = FALSE
+)
+output_dir <- file.path(report_dir, "outputs")
+plot_dir <- file.path(output_dir, "plots")
+table_dir <- file.path(output_dir, "tables")
+
+donor_scores <- read.csv(
+  file.path(table_dir, "donor_met_hi_fib_density_and_scores.csv"),
+  check.names = FALSE
+)
+donor_counts <- read.csv(
+  file.path(table_dir, "donor_analyzed_cell_counts_and_density.csv"),
+  check.names = FALSE
+)
+primary_cor <- read.csv(
+  file.path(table_dir, "primary_donor_level_spearman_correlations.csv"),
+  check.names = FALSE
+)
+threshold_cor <- read.csv(
+  file.path(table_dir, "minimum_met_hi_cell_threshold_sensitivity.csv"),
+  check.names = FALSE
+)
+ssc_cor <- read.csv(
+  file.path(table_dir, "ssc_only_spearman_correlations.csv"),
+  check.names = FALSE
+)
+count_tests <- read.csv(
+  file.path(table_dir, "cell_count_group_kruskal_tests.csv"),
+  check.names = FALSE
+)
+local_tests <- read.csv(
+  file.path(table_dir, "local_density_group_kruskal_tests.csv"),
+  check.names = FALSE
+)
+graph_qc <- read.csv(
+  file.path(table_dir, "delaunay_graph_qc.csv"),
+  check.names = FALSE
+)
+source_manifest <- read.csv(
+  file.path(table_dir, "source_manifest.csv"),
+  check.names = FALSE
+)
+
+pretty_metric <- function(x) {
+  x <- sub(
+    "mean_delaunay_neighbors_80um",
+    "Mean Delaunay neighbor count",
+    x,
+    fixed = TRUE
+  )
+  x <- sub(
+    "mean_distance_5nn_um",
+    "Mean five-nearest-cell distance",
+    x,
+    fixed = TRUE
+  )
+  x <- sub(
+    "mean_glycolysis_score",
+    "Glycolysis score",
+    x,
+    fixed = TRUE
+  )
+  sub(
+    "mean_tca_oxphos_score",
+    "TCA/OXPHOS score",
+    x,
+    fixed = TRUE
+  )
+}
+
+figure_link <- function(stem, alt) {
+  png <- file.path("outputs", "plots", paste0(stem, ".png"))
+  pdf <- file.path("outputs", "plots", paste0(stem, ".pdf"))
+  svg <- file.path("outputs", "plots", paste0(stem, ".svg"))
+  cat(sprintf(
+    "<p><a href='%s'>PDF</a> | <a href='%s'>SVG</a></p><img src='%s' alt='%s' style='width:100%%;height:auto;'>",
+    pdf, svg, png, alt
+  ))
+}
+```
+
+# Analysis design
+
+The finalized first-cohort IMC `SpatialExperiment` was used without
+reclustering or recalculation of metabolic scores. `Met_hi_Fib` corresponds
+to the established `stromal_2` state. The existing `Glycolysis_z_c` and
+`TCA_z_c` columns were retained as the glycolysis and TCA/OXPHOS scores.
+
+Two complementary local-density metrics were calculated for each
+`Met_hi_Fib` cell:
+
+1. **Number of neighboring cells:** out-degree in the stored
+   `delaunay_80_new` graph, which is a Delaunay graph with a maximum edge
+   distance of 80 µm.
+2. **Five-nearest-cell distance:** mean Euclidean centroid distance to the
+   five nearest cells in the same donor image.
+
+Local-density metrics and metabolic scores were averaged within donor before
+Spearman testing. Thus, the inferential unit is the donor, not the cell. This
+avoids treating thousands of spatially dependent cells as independent
+replicates.
+
+```{r source-table}
+knitr::kable(
+  source_manifest,
+  row.names = FALSE,
+  caption = "Source object and analysis definitions"
+)
+```
+
+```{r graph-table}
+graph_show <- graph_qc
+numeric_cols <- vapply(graph_show, is.numeric, logical(1))
+graph_show[numeric_cols] <- lapply(graph_show[numeric_cols], round, 3)
+knitr::kable(
+  graph_show,
+  row.names = FALSE,
+  caption = "Stored Delaunay graph quality checks"
+)
+```
+
+# Primary results
+
+## Density-score correlations
+
+```{r fig1, results='asis'}
+figure_link(
+  "figure_1_density_metabolic_score_correlations",
+  "Donor-level correlations between local density and metabolic scores"
+)
+```
+
+```{r primary-table}
+primary_show <- primary_cor
+primary_show$density_metric <- pretty_metric(primary_show$density_metric)
+primary_show$metabolic_score <- pretty_metric(primary_show$metabolic_score)
+numeric_cols <- vapply(primary_show, is.numeric, logical(1))
+primary_show[numeric_cols] <- lapply(primary_show[numeric_cols], round, 3)
+knitr::kable(
+  primary_show,
+  row.names = FALSE,
+  caption = "Primary donor-level Spearman correlations across all 16 donors"
+)
+```
+
+None of the four prespecified donor-level associations was statistically
+significant (`r sprintf("raw p-values %.3f–%.3f", min(primary_cor$p_value), max(primary_cor$p_value))`).
+The glycolysis estimates were moderate in magnitude but imprecise:
+Delaunay-neighbor count \(\rho =
+`r sprintf("%.2f", primary_cor$rho[primary_cor$density_metric == "mean_delaunay_neighbors_80um" & primary_cor$metabolic_score == "mean_glycolysis_score"])`\)
+and five-nearest-cell distance \(\rho =
+`r sprintf("%.2f", primary_cor$rho[primary_cor$density_metric == "mean_distance_5nn_um" & primary_cor$metabolic_score == "mean_glycolysis_score"])`\).
+The appropriate conclusion is therefore **no statistically significant
+donor-level association**, not proof that the true associations are exactly
+zero.
+
+## Analyzed cell numbers
+
+```{r fig2, results='asis'}
+figure_link(
+  "figure_2_analyzed_cell_count_and_global_density",
+  "Analyzed cell counts and area-normalized cellularity by clinical group"
+)
+```
+
+The distributions of total analyzed cells and area-normalized analyzed-cell
+density did not differ systematically among healthy, progressive SSc, and
+stable SSc donors:
+
+```{r count-table}
+count_show <- count_tests
+numeric_cols <- vapply(count_show, is.numeric, logical(1))
+count_show[numeric_cols] <- lapply(count_show[numeric_cols], round, 3)
+knitr::kable(
+  count_show,
+  row.names = FALSE,
+  caption = "Kruskal-Wallis tests for analyzed cell counts and overall cellularity"
+)
+```
+
+## Local cellularity by group
+
+```{r fig3, results='asis'}
+figure_link(
+  "figure_3_local_density_metrics_by_group",
+  "Local density metrics around Met_hi_Fib by clinical group"
+)
+```
+
+```{r local-table}
+local_show <- local_tests
+numeric_cols <- vapply(local_show, is.numeric, logical(1))
+local_show[numeric_cols] <- lapply(local_show[numeric_cols], round, 3)
+knitr::kable(
+  local_show,
+  row.names = FALSE,
+  caption = "Kruskal-Wallis tests for local-density metrics around Met_hi_Fib"
+)
+```
+
+# Robustness checks
+
+## Minimum Met_hi_Fib representation
+
+Some donors contain few `Met_hi_Fib` cells. The primary figure retains all
+donors and scales each point by the number of contributing cells. Repeating
+the analysis after requiring at least 5, 10, or 20 `Met_hi_Fib` cells per
+donor did not produce a statistically significant result.
+
+```{r fig4, results='asis'}
+figure_link(
+  "figure_4_minimum_cell_threshold_sensitivity",
+  "Sensitivity of correlations to minimum Met_hi_Fib cell counts"
+)
+```
+
+## SSc-only analysis
+
+```{r ssc-table}
+ssc_show <- ssc_cor
+ssc_show$density_metric <- pretty_metric(ssc_show$density_metric)
+ssc_show$metabolic_score <- pretty_metric(ssc_show$metabolic_score)
+numeric_cols <- vapply(ssc_show, is.numeric, logical(1))
+ssc_show[numeric_cols] <- lapply(ssc_show[numeric_cols], round, 3)
+knitr::kable(
+  ssc_show,
+  row.names = FALSE,
+  caption = "Sensitivity analysis restricted to the nine SSc donors"
+)
+```
+
+# Figure legend
+
+The standalone vector exports intentionally omit panel letters so that they
+can be added consistently during final figure assembly.
+
+> **Figure S5. Cell-number and local-density controls for IMC metabolic
+> profiles.** **(A)** Relationships between local cellularity and metabolic
+> scores in Met-hi Fib cells. For each donor (`n = 16`), the mean number of
+> adjacent cells in the stored Delaunay graph (maximum edge distance 80 µm)
+> and the mean centroid distance to the five nearest cells within the same
+> image were plotted against the donor-mean glycolysis and TCA/OXPHOS scores.
+> Each point represents one donor; color indicates clinical group and point
+> size indicates the number of Met-hi Fib cells contributing to the donor
+> mean. Dashed lines are visual linear guides. Insets report two-sided
+> donor-level Spearman correlation coefficients and unadjusted p-values.
+> **(B)** Total analyzed cells and area-normalized analyzed-cell density for
+> each donor, stratified by clinical group. Points represent donors; boxes
+> show the median and interquartile range, with whiskers extending to the most
+> extreme value within 1.5 times the interquartile range. Area-normalized
+> density was calculated from the stored image dimensions assuming the 1-µm
+> IMC pixel size. Insets report two-sided Kruskal-Wallis p-values.
+
+# Recommended response wording
+
+> We thank the reviewer for this important comment. We replaced the
+> representative images in Fig. 2D with images selected from comparable
+> dermal depths and anatomical localizations across groups, reducing potential
+> bias from differences in skin layer. We additionally tested whether local
+> cellularity could explain the metabolic profiles of Met_hi_Fib. For each
+> Met_hi_Fib cell, we quantified the number of adjacent cells in the existing
+> Delaunay graph (maximum edge distance 80 µm) and the mean distance to its
+> five nearest cells. These quantities, together with glycolysis and
+> TCA/OXPHOS scores, were averaged per donor, and donor-level associations were
+> tested using Spearman correlation. Neither local-density metric showed a
+> statistically significant donor-level association with either metabolic
+> score. This conclusion was unchanged after restricting the analysis to SSc
+> donors or to donors with greater numbers of Met_hi_Fib cells. Moreover, the
+> total number of analyzed cells and the area-normalized analyzed-cell density
+> did not differ significantly among healthy, progressive SSc, and stable SSc
+> donors. These results do not support differences in cell number or local
+> cellularity as the sole explanation for the observed metabolic profiles,
+> although the modest donor number limits the precision with which small or
+> moderate density effects can be excluded.
+
+# Recommended Methods wording
+
+> **Cell-density control analysis.** To assess whether increased metabolic
+> scores in Met_hi_Fib could be attributable to local cellularity, two
+> density-related parameters were calculated for every Met_hi_Fib cell: (i)
+> the number of adjacent cells in the existing Delaunay graph with a maximum
+> edge distance of 80 µm and (ii) the mean Euclidean centroid distance to the
+> five nearest cells within the same donor image. Delaunay-neighbor count,
+> five-nearest-cell distance, glycolysis score, and TCA/OXPHOS score were
+> averaged per donor. Associations between donor-level density metrics and
+> metabolic scores were assessed by two-sided Spearman correlation. Total
+> analyzed-cell counts and area-normalized analyzed-cell density were compared
+> among healthy, progressive SSc, and stable SSc donors using the
+> Kruskal-Wallis test.
+
+# Interpretation boundary
+
+The data support **absence of a statistically significant donor-level
+association**, not equivalence or proof of zero effect. The phrase “the
+increased metabolic scores are not explained by local density” is too
+absolute for 16 donors. “The results do not support local density as the sole
+explanation” is accurate and better aligned with the confidence intervals.
+
+# Reproducibility
+
+All source tables are in `outputs/tables`. Every figure is exported as PDF,
+SVG, and 450-dpi PNG. The complete calculation is in
+`compute_cell_density_reviewer_qc.R`.

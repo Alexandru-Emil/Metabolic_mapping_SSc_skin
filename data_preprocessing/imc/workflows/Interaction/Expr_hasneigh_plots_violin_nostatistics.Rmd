@@ -1,0 +1,168 @@
+---
+title: "Interaction analysis"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# Load spe
+
+```{r load spe}
+spe <- readRDS(here("Datasets/spe_20241027221015.rds"))
+```
+
+
+# Generate: Plot expression of a marker gene in cells with and without selected neighbours - Boxplots
+
+```{r plot expression of a marker gene in cells with and without selected neighbours 2,echo=TRUE, fig.width=10, fig.height=8}
+
+# Define your features to plot and populations of interest
+features_to_plot <- c(
+  "aSMA",
+  "FAP",
+  "Cdh11",
+  "Collagen",
+  "Ki-67",
+  "NOX4",
+  "HIF1a",
+  "Glycolysis_z_c",
+  "Glycolysis_z",
+  "TCA_z_c",
+  "TCA_z"
+)
+
+has_neigh <- names(spe$hasNeigh_df)
+pop_interest <- c("Stromal", "CD31+", "CD45+CD68+")
+
+plot_list_pop_interest <- list()
+
+for (k in pop_interest) {
+  # Subset SingleCellExperiment object for cells of interest
+  spe_subset <- spe[, spe$new_celllabels == k]
+  
+  # Turn "z-rescaled_new" assay data into a data frame (cells in rows)
+  expression_data <- as.data.frame(t(assay(spe_subset, "z-rescaled_new")))
+  
+  # Add metadata columns to the data frame
+  expression_data$Donor         <- colData(spe_subset)$Donor
+  expression_data$Disease       <- colData(spe_subset)$Disease
+  expression_data$Glycolysis_z_c <- colData(spe_subset)$Glycolysis_z_c
+  expression_data$Glycolysis_z   <- colData(spe_subset)$Glycolysis_z
+  expression_data$TCA_z_c        <- colData(spe_subset)$TCA_z_c
+  expression_data$TCA_z          <- colData(spe_subset)$TCA_z
+  
+  # Initialize a list to store plots for each feature
+  plot_list_features <- list()
+  
+  for (i in features_to_plot) {
+    # Initialize a list to store plots for each neighbor type
+    plot_list_has_neigh <- list()
+    
+    for (j in has_neigh) {
+      # Convert neighbor column to a factor (ensure consistent ordering)
+      expression_data[[j]] <- factor(as.character(spe_subset$hasNeigh_df[, j]))
+      
+      # Identify the first group/category on the x-axis
+      first_group <- levels(expression_data[[j]])[1]
+      
+      # Calculate the median expression for the first group
+      median_val <- median(expression_data[[i]][expression_data[[j]] == first_group], na.rm = TRUE)
+      
+      # Generate the violin plot with jittered points and a horizontal median line
+      plot_exp <- ggplot(expression_data, aes(
+        x   = !!sym(j),
+        y   = .data[[i]],
+        fill = !!sym(j)
+      )) +
+        geom_violin(trim = FALSE, alpha = 0.6) +
+        geom_jitter(width = 0.05, size = 0.1, alpha = 0.1) +
+        geom_hline(yintercept = median_val, linetype = "dashed", color = "blue") +
+        labs(
+          title = paste("Expression of", i, "in", k, "cells"),
+          x = "Presence of target neighbour cell",
+          y = "Marker expression",
+          fill = "Presence of neighbour"
+        ) +
+        theme_bw(base_size = 12)+  # You can customize your theme here
+      
+      # Optionally color by j instead of fill, or add a manual fill scale:
+      scale_fill_manual(values = c("#B2DF8A", "#FB9A99"))
+      
+      # Store the plot in the list
+      plot_list_has_neigh[[j]] <- plot_exp
+    }
+    
+    # Store all "neighbor" plots for the current feature
+    plot_list_features[[i]] <- plot_list_has_neigh
+  }
+  
+  # Store the plots for the current cell population
+  plot_list_pop_interest[[k]] <- plot_list_features
+}
+
+```
+
+# Display: Plot expression of a marker gene in cells with and without selected neighbours - Boxplots {.tabset .tabset-pills}
+
+`r fig_dim <- c(6, 3)`
+
+```{r display plot expr boxplot, fig.width=fig_dim[1], fig.height=fig_dim[2], results='asis'}
+# Display the plots in tabs
+for (k in pop_interest) {
+  cat("## ", k, "{.tabset .tabset-pills}\n\n")
+  for (i in features_to_plot) {
+    cat("### ", i, "{.tabset .tabset-pills}\n\n")
+    for (j in has_neigh) {
+      cat("#### ", j, "\n\n")
+      print(plot_list_pop_interest[[k]][[i]][[j]])
+      cat("\n\n")
+    }
+  }
+}
+```
+
+# Plot selected markers in cells with specific neighbours
+```{r plot selected markers in cells with specific neighbours, fig.width=5, fig.height=3}
+pop_interest <- c("CD45+CD68+")
+features_to_plot <- c("Glycolysis_z_c")
+has_neigh <- "has_stromal_2_neigh"
+print(plot_list_pop_interest[[pop_interest]][[features_to_plot]][[has_neigh]])
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Plots of expression of markers in cells with specific neighbours. The annotation of a cell type by its interaction with another cell type should be already present in the spe. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

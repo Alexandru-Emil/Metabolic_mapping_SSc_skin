@@ -1,0 +1,183 @@
+---
+title: "Bulk RNA-seq differential expression: 2DG + OX and LDHA + OX versus control"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    theme: cosmo
+    df_print: paged
+params:
+  out_dir: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+out_dir <- params$out_dir
+summary <- readRDS(file.path(out_dir, 'objects', 'analysis_summary.rds'))
+fmt_int <- function(x) format(x, big.mark = ',', scientific = FALSE, trim = TRUE)
+fmt_num <- function(x, digits = 3) format(round(x, digits), nsmall = digits, trim = TRUE)
+fig <- function(name) knitr::include_graphics(file.path(out_dir, 'figures', name))
+deg_summary <- summary$deg_summary
+top_genes <- summary$top_genes_summary
+top_gsea <- summary$top_gsea_summary
+filtering <- summary$filtering_summary
+sample_meta <- summary$sample_meta
+deseq_summary <- summary$deseq_summary
+```
+
+## Technical Summary
+
+This analysis compares two treatment conditions against paired controls: `2DG` is interpreted as `2DG + OX`, and `LDHA` is interpreted as `LDHA + OX`. The input contained `r fmt_int(filtering$value[filtering$metric == 'input_genes'])` gene rows across `r fmt_int(filtering$value[filtering$metric == 'sequencing_lanes'])` sequencing-lane columns. Technical lanes belonging to the same PCS-condition sample were summed, yielding `r fmt_int(nrow(sample_meta))` biological profiles: five PCS blocks measured under control, 2DG + OX, and LDHA + OX.
+
+The primary differential-expression model uses TMM normalization and `limma-voom` with sample quality weights in a paired/block design: `~ PCS + condition`. This is the most defensible primary model for this matrix because counts are fractional rather than strict raw integers. High-confidence DEG calls are defined as FDR < 0.05 and absolute log2 fold-change >= 1; genes passing FDR alone are retained in the all-gene tables.
+
+```{r summary-table}
+show_summary <- deg_summary[, c('contrast_label', 'genes_tested', 'fdr_0_05', 'up_fdr_0_05_abslog2fc_1', 'down_fdr_0_05_abslog2fc_1', 'deg_fdr_0_05_abslog2fc_1')]
+colnames(show_summary) <- c('Contrast', 'Genes tested', 'FDR < 0.05', 'Up DEG', 'Down DEG', 'Total DEG')
+knitr::kable(show_summary, digits = 3)
+```
+
+## The paired samples support treatment-level comparisons after lane consolidation
+
+The sample set is balanced at the biological level after technical lane consolidation: each PCS block has one control, one 2DG + OX, and one LDHA + OX profile. The library-size plot is therefore a QC check for depth and technical-lane consolidation rather than evidence of biological replication.
+
+```{r qc-library, out.width='100%'}
+fig('qc_library_sizes.png')
+```
+
+The PCA uses the top 5,000 most variable retained genes after TMM/voom transformation. The plot should be read as a sample-level QC view: treatment separation is interpretable only after accounting for the paired PCS structure in the model.
+
+```{r qc-pca, out.width='100%'}
+fig('qc_pca_voom_top_variable_genes.png')
+```
+
+The correlation heatmap checks whether any sample behaves as a strong outlier after normalization. Correlation structure is expected to reflect both paired PCS identity and treatment response.
+
+```{r qc-cor, out.width='100%'}
+fig('qc_sample_correlation_heatmap.png')
+```
+
+## Both treatment contrasts were tested with the same PCS-blocked model
+
+The DEG summary below separates high-confidence up/down genes from genes that meet FDR but have smaller absolute effect sizes. This avoids mixing statistical detectability with a publication-scale effect threshold.
+
+```{r deg-summary-plot, out.width='100%'}
+fig('deg_summary_bar.png')
+```
+
+### 2DG + OX versus control
+
+The volcano and MA plots show the same contrast from complementary angles: the volcano emphasizes significance and effect size, while the MA plot checks whether fold-change estimates depend strongly on expression level.
+
+```{r volcano-2dg, out.width='100%'}
+fig('deg_volcano_2DG_vs_C.png')
+```
+
+```{r ma-2dg, out.width='100%'}
+fig('deg_ma_2DG_vs_C.png')
+```
+
+### LDHA + OX versus control
+
+The LDHA + OX contrast was modeled with the identical normalization, filter, and paired design, so effect sizes and FDR values are directly comparable to the 2DG + OX contrast.
+
+```{r volcano-ldha, out.width='100%'}
+fig('deg_volcano_LDHA_vs_C.png')
+```
+
+```{r ma-ldha, out.width='100%'}
+fig('deg_ma_LDHA_vs_C.png')
+```
+
+## Top differential genes provide a manuscript-ready shortlist
+
+The heatmap shows the strongest differential genes across both contrasts, using row-scaled voom logCPM values. It is intended as a compact figure-panel candidate; exact statistics should be taken from the exported all-gene tables.
+
+```{r heatmap, out.width='100%'}
+fig('deg_top_genes_heatmap.png')
+```
+
+```{r top-gene-table}
+tg <- top_genes[, c('contrast_label', 'gene_label', 'GENENAME', 'logFC', 'AveExpr', 'adj.P.Val', 'direction')]
+colnames(tg) <- c('Contrast', 'Gene', 'Gene name', 'log2FC', 'Ave logCPM', 'FDR', 'Class')
+knitr::kable(tg, digits = 4)
+```
+
+## GO Biological Process analysis summarizes pathway-level signal
+
+GO Biological Process GSEA was run on the full ranked gene list for each contrast, using moderated t-statistics as the ranking metric. Positive NES values indicate enrichment toward the treatment-up end of the ranked list; negative NES values indicate enrichment toward control.
+
+```{r gsea-2dg, out.width='100%'}
+fig('pathway_go_bp_gsea_2DG_vs_C.png')
+```
+
+```{r gsea-ldha, out.width='100%'}
+fig('pathway_go_bp_gsea_LDHA_vs_C.png')
+```
+
+```{r gsea-table}
+if (nrow(top_gsea) > 0) {
+  gsea_show <- top_gsea[, c('contrast_label', 'Description', 'setSize', 'NES', 'p.adjust', 'qvalue')]
+  colnames(gsea_show) <- c('Contrast', 'GO Biological Process', 'Set size', 'NES', 'FDR', 'q value')
+  knitr::kable(gsea_show, digits = 4)
+} else {
+  cat('No GO GSEA results were returned.')
+}
+```
+
+## Scope, data, and definitions
+
+- Biological comparison: 2DG + OX vs control and LDHA + OX vs control.
+- Biological blocking factor: PCS sample identity, modeled as a fixed paired effect.
+- Technical lanes: sequencing-lane columns with the same PCS and condition were summed before modeling.
+- Primary expression unit: TMM-normalized voom logCPM for QC, heatmaps, and linear modeling.
+- DEG threshold: FDR < 0.05 and |log2FC| >= 1 for the publication shortlist; all tested genes are exported without effect-size filtering.
+- Gene identifiers: Ensembl IDs were version-stripped for annotation through `org.Hs.eg.db`; unmapped genes remain in the analysis with their Ensembl IDs.
+
+```{r sample-table}
+sm <- sample_meta[, c('sample_id', 'pcs', 'condition_label', 'n_technical_lanes', 'library_size')]
+colnames(sm) <- c('Sample', 'PCS block', 'Condition', 'Technical lanes', 'Summed library size')
+knitr::kable(sm)
+```
+
+## Methodology
+
+1. Imported the Galaxy gene-level matrix and parsed sample names into PCS block, condition, and technical-lane metadata.
+2. Summed technical lanes belonging to the same PCS-condition biological sample.
+3. Removed genes with zero total signal, then applied `edgeR::filterByExpr` using the paired design matrix.
+4. Normalized retained genes with TMM and fitted `limma::voomWithQualityWeights` using `~ PCS + condition`.
+5. Tested `condition2DG` and `conditionLDHA` coefficients against control with robust empirical Bayes moderation.
+6. Annotated genes with `org.Hs.eg.db`, exported all-gene and high-confidence DEG tables, and generated publication-style QC and DEG figures.
+7. Ran a DESeq2 sensitivity analysis on rounded lane-summed counts. This is secondary because the source matrix contains fractional counts.
+8. Ran GO Biological Process GSEA with `clusterProfiler::gseGO` on moderated t-statistics, plus GO over-representation tables for up/down DEG sets when enough genes were available.
+
+```{r deseq-sensitivity}
+if (nrow(deseq_summary) > 0) {
+  ds <- deseq_summary[, c('contrast_label', 'deseq2_fdr_0_05', 'deseq2_deg_fdr_0_05_abslog2fc_1', 'logfc_spearman_vs_limma', 'logfc_pearson_vs_limma')]
+  colnames(ds) <- c('Contrast', 'DESeq2 FDR < 0.05', 'DESeq2 DEG', 'Spearman log2FC vs limma', 'Pearson log2FC vs limma')
+  knitr::kable(ds, digits = 4)
+} else {
+  cat(summary$source_notes$sensitivity_model)
+}
+```
+
+## Limitations, uncertainty, and robustness checks
+
+- The supplied matrix contains fractional count values. The primary limma-voom model is appropriate for non-integer estimated counts, while DESeq2 is provided only as a rounded-count sensitivity analysis.
+- No raw sequencing QC, alignment metrics, strandedness checks, or gene-length offsets were provided. The report therefore validates the count matrix and modeled contrasts, not upstream read processing.
+- PCS is modeled as a fixed paired effect. With five biological blocks per condition, large effects are more reliable than borderline FDR-only calls.
+- GO terms can be redundant and broad. The exported GSEA and ORA tables should be used to choose a concise pathway narrative for the manuscript.
+
+## Recommended next steps
+
+1. Review the DEG shortlists against expected biology and remove genes that are unannotated or low-confidence for the planned figure panel.
+2. If FASTQ/BAM QC is available, add upstream metrics such as mapping rate, duplication, strandedness, and gene-body coverage before submission.
+3. For manuscript pathway claims, collapse redundant GO terms into a small set of biological themes and validate those against the leading-edge genes.
+4. Confirm whether `2DG + OX` and `LDHA + OX` should be interpreted as paired perturbations in the same PCS system for all downstream text.
+
+## Further questions
+
+- Are there additional covariates such as sequencing batch, library prep batch, or RNA integrity that should be included in the design?
+- Should the final manuscript emphasize high-confidence |log2FC| >= 1 genes, or all FDR-significant genes regardless of effect size?
+- Are there curated gene sets specific to the biological system that should supplement the GO analysis?

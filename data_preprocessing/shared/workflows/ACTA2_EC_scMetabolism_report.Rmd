@@ -1,0 +1,500 @@
+---
+title: "ACTA2_EC scMetabolism report"
+author: "Codex"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  dev = "png",
+  dpi = 300,
+  fig.retina = 2,
+  dev.args = list(bg = "white")
+)
+```
+
+```{r libraries}
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(Matrix)
+library(Seurat)
+library(scMetabolism)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+```
+
+```{r configuration}
+sfe_path <- project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds")
+output_dir <- file.path(getwd(), "acta2_ec_scmetabolism_outputs")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+ec_lv2_levels <- c(
+  "ACKR1_EC",
+  "ACTA2_EC",
+  "cycling_EC",
+  "EPC",
+  "HEY1_EC",
+  "lymphatic_EC"
+)
+
+group_levels <- c("Other_EC", "ACTA2_EC")
+pathway_lookup <- c(
+  "Glycolysis / Gluconeogenesis" = "Glycolysis",
+  "Citrate cycle (TCA cycle)" = "TCA / OXPHOS"
+)
+pathway_levels <- unname(pathway_lookup)
+pathway_labels <- c(
+  "Glycolysis" = "Glycolysis",
+  "TCA / OXPHOS" = "TCA /\nOXPHOS"
+)
+group_colors <- c("Other_EC" = "#4C78A8", "ACTA2_EC" = "#E45756")
+
+to_dgC <- function(x) {
+  if (inherits(x, "dgCMatrix")) return(x)
+  x <- as(x, "CsparseMatrix")
+  as(x, "dgCMatrix")
+}
+
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || rng[1] == rng[2]) {
+    return(rep(0.5, length(x)))
+  }
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+
+format_p <- function(p_value) {
+  dplyr::case_when(
+    is.na(p_value) ~ "p = NA",
+    p_value < 0.001 ~ "p < 0.001",
+    TRUE ~ paste0("p = ", formatC(p_value, format = "f", digits = 3))
+  )
+}
+
+save_plot_set <- function(plot, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  ggplot2::ggsave(png_file, plot, width = width, height = height, dpi = 300, bg = "white")
+
+  grDevices::pdf(pdf_file, width = width, height = height, useDingbats = FALSE, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+```
+
+# ACTA2_EC versus other ECs
+
+```{r prepare_ec_subset}
+if (!exists("sfe")) {
+  sfe <- readRDS(sfe_path)
+}
+
+if (!"lv2_anno_new" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain lv2_anno_new for ACTA2_EC selection.")
+}
+
+sfe_coldata <- as.data.frame(SummarizedExperiment::colData(sfe))
+sample_col <- dplyr::case_when(
+  "sample_id" %in% colnames(sfe_coldata) ~ "sample_id",
+  "SampleId" %in% colnames(sfe_coldata) ~ "SampleId",
+  TRUE ~ NA_character_
+)
+
+keep_ec <- !is.na(sfe_coldata[["lv2_anno_new"]]) &
+  sfe_coldata[["lv2_anno_new"]] %in% ec_lv2_levels
+
+sfe_ec <- sfe[, keep_ec]
+sfe_ec$lv2_anno_new <- factor(as.character(sfe_ec$lv2_anno_new), levels = ec_lv2_levels)
+sfe_ec$acta2_ec_group <- ifelse(
+  as.character(sfe_ec$lv2_anno_new) == "ACTA2_EC",
+  "ACTA2_EC",
+  "Other_EC"
+)
+sfe_ec$acta2_ec_group <- factor(sfe_ec$acta2_ec_group, levels = group_levels)
+
+ec_counts <- as.data.frame(table(
+  lv2_anno_new = as.character(sfe_ec$lv2_anno_new),
+  acta2_ec_group = as.character(sfe_ec$acta2_ec_group)
+)) %>%
+  dplyr::filter(Freq > 0)
+
+write.csv(
+  ec_counts,
+  file.path(output_dir, "acta2_ec_scmetabolism_lv2_counts.csv"),
+  row.names = FALSE
+)
+
+kable(ec_counts)
+```
+
+```{r run_scmetabolism}
+score_cache <- file.path(output_dir, "acta2_ec_scmetabolism_scores_matrix.rds")
+meta_cache <- file.path(output_dir, "acta2_ec_scmetabolism_metadata.rds")
+
+if (file.exists(score_cache) && file.exists(meta_cache)) {
+  acta2_ec_scmetab_scores <- readRDS(score_cache)
+  acta2_ec_scmetab_meta <- readRDS(meta_cache)
+} else {
+  ec_counts_mat <- to_dgC(SummarizedExperiment::assay(sfe_ec, "counts"))
+  acta2_ec_scmetab_meta <- as.data.frame(SummarizedExperiment::colData(sfe_ec))
+  rownames(acta2_ec_scmetab_meta) <- colnames(sfe_ec)
+
+  old_assay_version <- getOption("Seurat.object.assay.version")
+  options(Seurat.object.assay.version = "v3")
+  acta2_ec_seurat <- Seurat::CreateSeuratObject(
+    counts = ec_counts_mat,
+    meta.data = acta2_ec_scmetab_meta,
+    assay = "RNA",
+    project = "ACTA2_EC_scMetabolism"
+  )
+  if (is.null(old_assay_version)) {
+    options(Seurat.object.assay.version = NULL)
+  } else {
+    options(Seurat.object.assay.version = old_assay_version)
+  }
+
+  acta2_ec_seurat <- Seurat::NormalizeData(acta2_ec_seurat, verbose = FALSE)
+  acta2_ec_seurat$acta2_ec_group <- factor(
+    as.character(acta2_ec_seurat$acta2_ec_group),
+    levels = group_levels
+  )
+  Seurat::Idents(acta2_ec_seurat) <- "acta2_ec_group"
+
+  detected_cores <- parallel::detectCores(logical = FALSE)
+  scmetab_ncores <- ifelse(is.na(detected_cores), 1, min(2, detected_cores))
+
+  set.seed(1701)
+  acta2_ec_seurat <- scMetabolism::sc.metabolism.Seurat(
+    obj = acta2_ec_seurat,
+    method = "AUCell",
+    imputation = FALSE,
+    ncores = scmetab_ncores,
+    metabolism.type = "KEGG"
+  )
+
+  acta2_ec_scmetab_scores <- acta2_ec_seurat@assays$METABOLISM$score
+  acta2_ec_scmetab_meta <- acta2_ec_seurat@meta.data
+
+  saveRDS(acta2_ec_scmetab_scores, score_cache)
+  saveRDS(acta2_ec_scmetab_meta, meta_cache)
+}
+
+missing_pathways <- setdiff(names(pathway_lookup), rownames(acta2_ec_scmetab_scores))
+if (length(missing_pathways) > 0) {
+  stop("Missing scMetabolism pathways: ", paste(missing_pathways, collapse = ", "))
+}
+```
+
+```{r score_tables}
+score_matrix <- as.matrix(acta2_ec_scmetab_scores[names(pathway_lookup), , drop = FALSE])
+score_cells <- colnames(score_matrix)
+if (is.null(score_cells) || !all(score_cells %in% rownames(acta2_ec_scmetab_meta))) {
+  score_cells <- rownames(acta2_ec_scmetab_meta)[seq_len(ncol(score_matrix))]
+}
+
+score_wide <- as.data.frame(t(score_matrix), check.names = FALSE)
+score_wide$cell <- score_cells
+score_wide$sample_id <- if (!is.na(sample_col) && sample_col %in% colnames(acta2_ec_scmetab_meta)) {
+  as.character(acta2_ec_scmetab_meta[score_cells, sample_col, drop = TRUE])
+} else {
+  NA_character_
+}
+score_wide$lv2_anno_new <- as.character(acta2_ec_scmetab_meta[score_cells, "lv2_anno_new", drop = TRUE])
+score_wide$acta2_ec_group <- as.character(acta2_ec_scmetab_meta[score_cells, "acta2_ec_group", drop = TRUE])
+
+score_long <- score_wide %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(names(pathway_lookup)),
+    names_to = "scmetabolism_pathway",
+    values_to = "score"
+  ) %>%
+  dplyr::mutate(
+    pathway = unname(pathway_lookup[scmetabolism_pathway]),
+    pathway = factor(pathway, levels = pathway_levels),
+    acta2_ec_group = factor(acta2_ec_group, levels = group_levels),
+    lv2_anno_new = factor(lv2_anno_new, levels = ec_lv2_levels)
+  ) %>%
+  dplyr::select(
+    cell,
+    sample_id,
+    lv2_anno_new,
+    acta2_ec_group,
+    pathway,
+    scmetabolism_pathway,
+    score
+  )
+
+score_summary <- score_long %>%
+  dplyr::group_by(pathway, acta2_ec_group) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id[!is.na(sample_id) & sample_id != ""]),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+sample_summary <- score_long %>%
+  dplyr::filter(!is.na(sample_id), sample_id != "") %>%
+  dplyr::group_by(sample_id, pathway, acta2_ec_group) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+single_cell_tests <- score_long %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(
+    n_other_ec = sum(acta2_ec_group == "Other_EC"),
+    n_acta2_ec = sum(acta2_ec_group == "ACTA2_EC"),
+    median_other_ec = median(score[acta2_ec_group == "Other_EC"], na.rm = TRUE),
+    median_acta2_ec = median(score[acta2_ec_group == "ACTA2_EC"], na.rm = TRUE),
+    difference_median_acta2_minus_other = median_acta2_ec - median_other_ec,
+    p_value = stats::wilcox.test(score ~ acta2_ec_group, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    p_adjust_bh = stats::p.adjust(p_value, method = "BH"),
+    p_label = format_p(p_adjust_bh)
+  )
+
+write.csv(score_long, file.path(output_dir, "acta2_ec_scmetabolism_cell_scores.csv"), row.names = FALSE)
+write.csv(score_summary, file.path(output_dir, "acta2_ec_scmetabolism_summary.csv"), row.names = FALSE)
+write.csv(sample_summary, file.path(output_dir, "acta2_ec_scmetabolism_sample_summary.csv"), row.names = FALSE)
+write.csv(single_cell_tests, file.path(output_dir, "acta2_ec_scmetabolism_single_cell_wilcox_tests.csv"), row.names = FALSE)
+```
+
+## Summary
+
+```{r summary_table}
+kable(score_summary, digits = 4)
+```
+
+```{r single_cell_tests}
+kable(single_cell_tests, digits = 4)
+```
+
+The Wilcoxon tests above compare single-cell AUCell scores between ACTA2_EC and
+the other ECs. They are useful as a cell-level distribution check, but they do
+not model donor/sample nesting.
+
+## Dot Plots
+
+```{r dotplots, fig.width=5.6, fig.height=3.4}
+make_dotplot <- function(summary_df, scale_by_column = FALSE) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      pathway = factor(as.character(pathway), levels = rev(pathway_levels)),
+      acta2_ec_group = factor(as.character(acta2_ec_group), levels = group_levels)
+    )
+
+  if (isTRUE(scale_by_column)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(pathway) %>%
+      dplyr::mutate(
+        fill_score = rescale01(mean_score),
+        size_score = fill_score
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Column-scaled mean"
+    plot_title <- "ACTA2_EC scMetabolism scores, scaled"
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        fill_score = mean_score,
+        size_score = rescale01(mean_score)
+      )
+    legend_title <- "Mean AUCell score"
+    plot_title <- "ACTA2_EC scMetabolism scores"
+  }
+
+  ggplot(plot_df, aes(x = acta2_ec_group, y = pathway)) +
+    geom_point(
+      aes(fill = fill_score, size = size_score),
+      shape = 21,
+      color = "grey35",
+      stroke = 0.35
+    ) +
+    scale_y_discrete(labels = pathway_labels) +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = legend_title) +
+    scale_size(range = c(7, 14), guide = "none") +
+    labs(title = plot_title, x = NULL, y = NULL) +
+    theme_bw(base_size = 15) +
+    theme(
+      axis.text.x = element_text(size = 14, face = "bold"),
+      axis.text.y = element_text(size = 14, lineheight = 0.95),
+      legend.position = "right",
+      legend.title = element_text(size = 12.5),
+      legend.text = element_text(size = 11.5),
+      panel.grid.major = element_line(color = "grey88"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 16, hjust = 0.5, margin = margin(b = 6)),
+      plot.margin = margin(5.5, 6, 5.5, 5.5)
+    )
+}
+
+p_dot_raw <- make_dotplot(score_summary, scale_by_column = FALSE)
+p_dot_scaled <- make_dotplot(score_summary, scale_by_column = TRUE)
+
+save_plot_set(p_dot_raw, "acta2_ec_scmetabolism_dotplot_raw_reversed_axes", width = 5.6, height = 3.4)
+save_plot_set(p_dot_scaled, "acta2_ec_scmetabolism_dotplot_scaled_by_column_reversed_axes", width = 5.6, height = 3.4)
+
+p_dot_raw
+p_dot_scaled
+```
+
+## Single-Cell Distributions
+
+```{r distribution_plots, fig.width=7.2, fig.height=4.4}
+p_density <- ggplot(score_long, aes(x = score, fill = acta2_ec_group, color = acta2_ec_group)) +
+  geom_density(alpha = 0.28, linewidth = 0.8, adjust = 1.05) +
+  geom_vline(
+    data = score_summary,
+    aes(xintercept = median_score, color = acta2_ec_group),
+    linetype = "dashed",
+    linewidth = 0.55,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_x") +
+  scale_fill_manual(values = group_colors) +
+  scale_color_manual(values = group_colors) +
+  labs(
+    title = "Single-cell score distributions",
+    x = "AUCell score",
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 13.5, face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.position = "top",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+p_ecdf <- ggplot(score_long, aes(x = score, color = acta2_ec_group)) +
+  stat_ecdf(linewidth = 0.9) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_x") +
+  scale_color_manual(values = group_colors) +
+  labs(
+    title = "Single-cell empirical cumulative distributions",
+    x = "AUCell score",
+    y = "Fraction of cells",
+    color = NULL
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 13.5, face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.position = "top",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+set.seed(1701)
+p_cell_jitter <- score_long %>%
+  dplyr::mutate(
+    pathway = factor(as.character(pathway), levels = pathway_levels),
+    acta2_ec_group = factor(as.character(acta2_ec_group), levels = group_levels)
+  ) %>%
+  ggplot(aes(x = acta2_ec_group, y = score, color = acta2_ec_group)) +
+  geom_jitter(width = 0.16, height = 0, alpha = 0.34, size = 1.15) +
+  geom_boxplot(width = 0.22, outlier.shape = NA, fill = "white", color = "grey20", linewidth = 0.55) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  scale_color_manual(values = group_colors) +
+  labs(
+    title = "Single-cell scores",
+    x = NULL,
+    y = "AUCell score",
+    color = NULL
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 12.5, face = "bold", angle = 15, hjust = 1),
+    strip.text = element_text(size = 13.5, face = "bold"),
+    legend.position = "none",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+save_plot_set(p_density, "acta2_ec_scmetabolism_density", width = 7.2, height = 4.4)
+save_plot_set(p_ecdf, "acta2_ec_scmetabolism_ecdf", width = 7.2, height = 4.4)
+save_plot_set(p_cell_jitter, "acta2_ec_scmetabolism_single_cell_jitter_box", width = 7.2, height = 4.4)
+
+p_density
+p_ecdf
+p_cell_jitter
+```
+
+## Sample Means
+
+```{r sample_plot, fig.width=7.2, fig.height=4.2}
+if (nrow(sample_summary) > 0) {
+  p_sample <- sample_summary %>%
+    dplyr::mutate(
+      pathway = factor(as.character(pathway), levels = pathway_levels),
+      acta2_ec_group = factor(as.character(acta2_ec_group), levels = group_levels)
+    ) %>%
+    ggplot(aes(x = acta2_ec_group, y = mean_score, color = acta2_ec_group)) +
+    geom_point(aes(size = n_cells), alpha = 0.82, position = position_jitter(width = 0.08, height = 0)) +
+    facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+    scale_color_manual(values = group_colors) +
+    scale_size_continuous(range = c(2, 6), name = "Cells per sample") +
+    labs(
+      title = "Sample-level means, shown descriptively",
+      x = NULL,
+      y = "Mean AUCell score",
+      color = NULL
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 12.5, face = "bold", angle = 15, hjust = 1),
+      strip.text = element_text(size = 13.5, face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(size = 16, hjust = 0.5)
+    )
+
+  save_plot_set(p_sample, "acta2_ec_scmetabolism_sample_mean_dots", width = 7.2, height = 4.2)
+  p_sample
+} else {
+  cat("No sample identifier was available for the EC subset.")
+}
+```
+
+## Output Files
+
+```{r output_files}
+output_files <- data.frame(
+  file = sort(list.files(output_dir, full.names = FALSE)),
+  stringsAsFactors = FALSE
+)
+kable(output_files)
+```
+

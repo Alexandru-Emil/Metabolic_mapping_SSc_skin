@@ -1,0 +1,463 @@
+---
+title: "Seven-donor IMC-Xenium reanalysis"
+author: "Codex"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    self_contained: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+
+report_dir <- normalizePath(
+  dirname(knitr::current_input(dir = TRUE)),
+  winslash = "/",
+  mustWork = TRUE
+)
+output_root <- file.path(report_dir, "outputs")
+panel_dir <- file.path(output_root, "seven_donor_manuscript_panels")
+table_dir <- file.path(panel_dir, "tables")
+qc_plot_dir <- file.path(output_root, "annotation_qc_plots")
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(knitr)
+})
+
+show_panel <- function(stem) {
+  knitr::include_graphics(file.path(panel_dir, paste0(stem, ".png")))
+}
+
+strategy_metrics <- read.csv(
+  file.path(output_root, "annotation_strategy_comparison_summary.csv"),
+  check.names = FALSE
+)
+strategy_decision <- read.csv(
+  file.path(output_root, "annotation_strategy_decision.csv"),
+  check.names = FALSE
+)
+marker_specificity <- read.csv(
+  file.path(output_root, "ssc230_annotation_marker_specificity_summary.csv"),
+  check.names = FALSE
+)
+panel_audit <- read.csv(
+  file.path(panel_dir, "seven_donor_panel_cell_audit.csv"),
+  check.names = FALSE
+)
+join_audit <- read.csv(
+  file.path(output_root, "seven_donor_join_audit.csv"),
+  check.names = FALSE
+)
+fib_cor_stats <- read.csv(
+  file.path(
+    table_dir,
+    "fibmet_imc_scmetabolism_correlation_stats_seven_donors.csv"
+  ),
+  check.names = FALSE
+)
+ec_cor_stats <- read.csv(
+  file.path(
+    table_dir,
+    "endmet_imc_scmetabolism_correlation_stats_seven_donors.csv"
+  ),
+  check.names = FALSE
+)
+```
+
+<style>
+body {
+  color: #222;
+  background: #fff;
+}
+.main-container {
+  max-width: 1240px;
+}
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.5rem auto 1.25rem auto;
+  background: #fff;
+}
+.tab-content {
+  padding-top: 0.75rem;
+}
+table {
+  font-size: 0.92rem;
+}
+.method-note {
+  border-left: 4px solid #4E79A7;
+  padding: 0.55rem 0.85rem;
+  margin: 0.8rem 0 1.2rem 0;
+  background: #F6F8FA;
+}
+</style>
+
+# Technical summary
+
+ExcludedValidation was added to the finalized six-donor Xenium SFE after applying its
+recorded QC flag, yielding a joined object of **21,271 Xenium cells from seven
+donors**. Of the retained ExcludedValidation cells, **594 have validated IMC-Xenium shared
+identifiers**; 145 contribute to paired FibMET analyses and 63 contribute to
+paired EndMET analyses.
+
+Two annotation strategies were evaluated in parallel. Broad ExcludedValidation population
+labels agreed in 90.4% of cells between an all-seven Harmony refit and
+independent mapping to the finalized six-donor reference. A Harmony refit was
+not stable enough to replace the manually curated fine annotation space:
+only 46.7% of the six-donor fibroblast/endothelial subtype labels were retained.
+The manuscript-facing panels therefore preserve the finalized six-donor labels
+and map ExcludedValidation into that reference; the all-seven Harmony embeddings and
+clusters remain available as a sensitivity analysis.
+
+All applicable IMC-only, paired IMC-Xenium, scMetabolism, ECM, Sankey, and
+Xenium-only annotation panels were regenerated with all seven donors. Every
+panel is exported as PNG, PDF, and SVG using the original manuscript palette,
+fixed score ranges, and panel dimensions.
+
+# Seven-donor Xenium annotation {.tabset .tabset-pill}
+
+## Figure S6A: major populations
+
+The all-seven Harmony embedding is displayed using the marker-validated final
+labels. This separates the embedding calculation from the annotation decision:
+ExcludedValidation participates in the joint geometry, while the labels remain compatible
+with the finalized six-donor annotation vocabulary.
+
+```{r xenium_major_umap}
+show_panel("xenium_major_umap_seven_donors")
+```
+
+## Figure S6B: major markers
+
+Dot size is the percentage of cells expressing each gene and color is the
+unscaled mean log-normalized Xenium expression. The lineage-marker diagonal
+provides an independent visual check of the final population labels.
+
+```{r xenium_major_dotplot}
+show_panel("xenium_major_marker_dotplot_seven_donors")
+```
+
+# Fibroblast panels {.tabset .tabset-pill}
+
+## FibMET UMAP
+
+The finalized IMC FibMET embedding now includes all seven matched donors while
+retaining the original salmon/cyan phenotype colors and panel ratio.
+
+```{r fibmet_umap}
+show_panel("fibmet_umap_seven_donors")
+```
+
+## IMC metabolic-score UMAPs
+
+The glycolysis and TCA/OXPHOS protein scores are means of the same prespecified
+IMC marker sets used previously. Both panels retain the fixed -1 to 1 color
+range so the seven-donor result is visually comparable with the original.
+
+```{r fibmet_score_umaps}
+show_panel("fibmet_imc_score_umaps_seven_donors")
+```
+
+## Protein expression
+
+Each black point is one donor-level group mean. The displayed paired Wilcoxon
+tests therefore use the donor, rather than the cell, as the replicate.
+
+```{r fibmet_protein}
+show_panel("fibmet_protein_expression_seven_donors")
+```
+
+## IMC metabolic heatmap
+
+Mean IMC marker z scores are shown without reclustering the two FibMET columns.
+The color range is fixed to -1 to 0.5, matching the original figure contract.
+
+```{r fibmet_heatmap}
+show_panel("fibmet_imc_heatmap_seven_donors")
+```
+
+## Donor-level IMC scores
+
+The seven points in each FibMET condition are donor-level means. The paired
+test uses donors represented in both conditions.
+
+```{r fibmet_sample_scores}
+show_panel("fibmet_sample_scores_seven_donors")
+```
+
+## Xenium gene expression
+
+Only fibroblasts with validated paired IMC labels are included. Dot size is
+the percentage expressed; color is gene-wise scaled mean expression across
+`Other_Fib` and `Met_hi_Fib`, clipped to -1 to 1 to preserve the figure style.
+
+```{r fibmet_gene_dotplot}
+show_panel("fibmet_xenium_gene_dotplot_seven_donors")
+```
+
+## Xenium-to-IMC Sankey
+
+The widths count paired cells flowing from each final Xenium fibroblast subtype
+to its IMC FibMET label. ExcludedValidation contributes through its validated shared cell
+identifiers.
+
+```{r fibmet_sankey}
+show_panel("fibmet_xenium_to_imc_sankey_seven_donors")
+```
+
+## ECM scores
+
+Color and size show the mean core-matrisome AUCell score within each Xenium
+fibroblast subtype and paired IMC FibMET state. The score was recomputed from
+the joined seven-donor SFE.
+
+```{r fibmet_ecm}
+show_panel("fibmet_ecm_dotplot_seven_donors")
+```
+
+## scMetabolism
+
+Glycolysis and citrate-cycle AUCell scores were recomputed from all annotated
+seven-donor Xenium fibroblasts, then summarized only across cells carrying a
+paired FibMET label. The white-to-red scale shows the unscaled group mean.
+
+```{r fibmet_scmetabolism}
+show_panel("fibmet_scmetabolism_dotplot_seven_donors")
+```
+
+## Single-cell IMC-Xenium correlation
+
+Each point is one cell with a validated shared identifier. The weak correlations
+show that the IMC protein marker averages and transcript-based pathway AUCell
+scores measure related but non-equivalent biological layers.
+
+```{r fibmet_correlation}
+show_panel("fibmet_imc_scmetabolism_correlation_seven_donors")
+```
+
+```{r fibmet_correlation_table}
+kable(
+  fib_cor_stats,
+  digits = 3,
+  caption = "Fibroblast matched-cell Spearman correlations"
+)
+```
+
+# Endothelial panels {.tabset .tabset-pill}
+
+## EndMET UMAP
+
+The finalized IMC EndMET embedding includes all seven donors and retains the
+original orange/blue metabolic-state colors.
+
+```{r endmet_umap}
+show_panel("endmet_umap_seven_donors")
+```
+
+## IMC metabolic heatmap
+
+Mean IMC marker z scores are shown with a fixed -1 to 1 range and the same
+annotation-to-heatmap ratio as the original EndMET panel.
+
+```{r endmet_heatmap}
+show_panel("endmet_imc_heatmap_seven_donors")
+```
+
+## EndMET scMetabolism
+
+The seven-donor Xenium glycolysis and citrate-cycle AUCell scores are summarized
+over ECs with a paired IMC EndMET label. The two groups use a common unscaled
+white-to-red color legend.
+
+```{r endmet_scmetabolism}
+show_panel("endmet_scmetabolism_dotplot_seven_donors")
+```
+
+## Xenium EC UMAP
+
+The all-seven EC Harmony embedding is colored by the final reference-compatible
+EC subtype labels.
+
+```{r xenium_ec_umap}
+show_panel("xenium_ec_umap_seven_donors")
+```
+
+## Xenium EC markers
+
+Dot size is percent expressed and color is unscaled mean log-normalized
+expression. The same white-to-red presentation and marker order are used as in
+the original figure.
+
+```{r xenium_ec_dotplot}
+show_panel("xenium_ec_gene_dotplot_seven_donors")
+```
+
+## EC ECM distributions
+
+Single-cell core-matrisome and collagen AUCell distributions are shown across
+the six final Xenium EC labels. These are descriptive cell-level distributions
+and do not treat cells as independent donor replicates.
+
+```{r xenium_ec_ecm}
+show_panel("xenium_ec_ecm_violin_seven_donors")
+```
+
+## ACTA2_EC-to-EndMET Sankey
+
+Paired ACTA2_EC cells are mapped to the two IMC EndMET states. ExcludedValidation does not
+receive an ACTA2_EC reference-mapping call, so it contributes to the broader EC
+panels but not to this specific flow.
+
+```{r acta2_sankey}
+show_panel("acta2_ec_to_endmet_sankey_seven_donors")
+```
+
+## ACTA2_EC scMetabolism
+
+All final Xenium ECs are split into ACTA2_EC and the remaining ECs. The score
+matrix and plotting geometry are identical to the other seven-donor
+scMetabolism panels.
+
+```{r acta2_scmetabolism}
+show_panel("acta2_ec_scmetabolism_dotplot_seven_donors")
+```
+
+## Single-cell IMC-Xenium correlation
+
+The paired EC correlations are close to zero in both EndMET states. The panel is
+retained as a cross-modal concordance check rather than evidence that the two
+assays produce interchangeable pathway measurements.
+
+```{r endmet_correlation}
+show_panel("endmet_imc_scmetabolism_correlation_seven_donors")
+```
+
+```{r endmet_correlation_table}
+kable(
+  ec_cor_stats,
+  digits = 3,
+  caption = "Endothelial matched-cell Spearman correlations"
+)
+```
+
+# Annotation sensitivity {.tabset .tabset-pill}
+
+## Concordance
+
+The broad ExcludedValidation population agreement exceeds the prespecified 0.85 threshold.
+The fine-subtype results do not support replacing the finalized annotation
+space with a Harmony-based refit.
+
+```{r annotation_concordance}
+kable(strategy_metrics, digits = 3)
+kable(strategy_decision)
+```
+
+## Major-marker QC
+
+```{r major_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_major_marker_qc.png"))
+```
+
+## Fibroblast-marker QC
+
+Reference mapping represents all eight fibroblast labels and has a higher
+cell-weighted canonical-marker specificity than the joint Harmony candidate.
+
+```{r fibroblast_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_fibroblast_marker_qc.png"))
+```
+
+## Endothelial-marker QC
+
+The mapped EC labels retain five reference subtypes in ExcludedValidation. Joint Harmony
+has slightly higher weighted marker specificity but collapses the query to
+three labels, making it unsuitable as a replacement for the curated subtype
+space.
+
+```{r endothelial_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_endothelial_marker_qc.png"))
+```
+
+## Specificity summary
+
+```{r marker_specificity_table}
+kable(marker_specificity, digits = 3)
+```
+
+# Scope and methods
+
+The ExcludedValidation portable SFE was restricted to `qc_pass == TRUE` before joining.
+The final object contains the identical 5,099-gene row universe for all seven
+donors. Counts, logcounts, centroid geometries, and cell-segmentation geometries
+were retained; logcounts and size factors were recalculated jointly.
+
+The independent mapping arm used two-stage Seurat RNA anchor transfer from the
+finalized six-donor reference: first the nine major populations, then the
+fibroblast or endothelial subtype within the mapped parent population. The
+joint sensitivity arm used seven-donor LogNormalize/PCA/Harmony integration,
+Leiden clustering over a resolution grid, and cluster labels anchored to the
+finalized six-donor annotations.
+
+scMetabolism was run with AUCell and the KEGG pathway collection on all final
+Xenium fibroblasts and ECs. ECM scores were calculated with AUCell from the
+Naba core-matrisome network. IMC glycolysis and TCA/OXPHOS scores are means of
+the prespecified z-scored protein marker sets.
+
+```{r cohort_tables}
+kable(join_audit, caption = "Joined seven-donor Xenium SFE")
+kable(panel_audit, caption = "Cell denominators used in regenerated panels")
+```
+
+# Limitations and robustness
+
+<div class="method-note">
+The original six-donor fine annotations were produced after ResolVI integration
+and manual marker review. The trained ResolVI model/H5AD was not present in the
+available project files, so an exact all-seven ResolVI refit could not be
+reproduced. Harmony was therefore used only as a transparent sensitivity arm,
+not presented as the original integration method.
+</div>
+
+The targeted Xenium panel does not pass scMetabolism's coverage threshold for a
+separate KEGG oxidative-phosphorylation gene set. The transcriptomic
+`TCA / OXPHOS` display row is therefore the citrate-cycle score used in the
+previous analysis; no missing OXPHOS value was imputed. The IMC protein score
+does include the prespecified TCA/OXPHOS protein markers.
+
+Cell-level distribution tests and correlations can be affected by donor
+composition and within-donor dependence. Donor-level plots are shown where
+the scientific comparison is inferential; the matched-cell correlations are
+descriptive cross-modal checks.
+
+# Recommended manuscript use
+
+Use the reference-mapped seven-donor panels as the primary replacements because
+they add ExcludedValidation without redefining the six published donors. Describe the
+all-seven Harmony analysis as a sensitivity check confirming robust broad
+population placement but lower fine-subtype stability.
+
+For the methods, state that ExcludedValidation passed the same Xenium QC and scoring
+pipeline, was mapped to the finalized annotation reference, and entered paired
+analyses only through validated shared IMC-Xenium identifiers. Keep the exact
+ResolVI-model limitation explicit if the joint sensitivity analysis is
+mentioned.
+
+# Further questions
+
+An exact all-seven re-fit could be performed only if the original trained
+ResolVI model or its input H5AD and Python environment becomes available. That
+would test whether the lower fine-subtype retention is specific to Harmony or
+reflects genuine instability after adding ExcludedValidation.
+

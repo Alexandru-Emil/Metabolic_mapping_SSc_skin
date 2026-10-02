@@ -1,0 +1,202 @@
+---
+title: "Spe integrated z-rescaled UMAP heatmap"
+author: "Veda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library set up}
+library(SingleCellExperiment)
+library(SpatialExperiment)
+library(DelayedMatrixStats)
+library(dittoSeq)
+library(ggsankey)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(scuttle)
+# Assume `sfe` and `spe` objects are already loaded in your environment
+
+```
+
+
+
+```{r load spe}
+spe<-readRDS(project_path("Revision/Nan annotation/IMC_AnchorTrans_merged_251030163124.rds"))
+
+sfe<-readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/XeniumSfe_FibAnno_251104104458.rds"))
+
+seurat<-readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/VedaSScSkinXe_EcFibAnno_260225234740.rds"))
+```
+
+```{r z-scores}
+# Compute z‑scores from an existing assay (e.g. "asinh")
+mu <- rowMeans(assay(spe, "asinh"))
+sigma <- rowSds(assay(spe, "asinh"))
+
+assay(spe, "z_scaled") <- sweep(
+  sweep(assay(spe, "asinh"), 1, mu, "-"),
+  1, sigma, "/"
+)
+
+assayNames(spe)
+summary(rowMeans(assay(spe, "z_scaled")))
+summary(rowSds(assay(spe, "z_scaled")))
+
+```
+
+```{r heatmap}
+z<-list("glycolysis"=c(2,30,32,7,15,26),"TCA_cycle"=c(29,24,31,17),"Amino_Acid"=c(8),"Fatty_acid_synthesis"=c(36),
+        "Fatty_acid_oxidation"=(34),"Pentose_Pathway"=12,"anabolic_signaling"=c(9),
+        "catabolic_signaling"=c(21),"Oxidative_stress"=c(37),
+        "hypoxia"=38,"Mitochondrial_biogenesis"=c(22,13,10))
+
+
+markers_ordered <- names(spe)[do.call(c, z)]
+
+markers_ordered <- intersect(markers_ordered, rownames(spe))
+
+rowData(spe)$use_channel_met_markers<-grepl("Glut1|PKM2|CD98|p_mTOR|NRF2|G6PD|TFAM|LDHA|SDHA|pAMPK|PGC-1a|OGDH|GAPDH|CS|HK1|ATP5A|PFKL1|CPT1a|ACAC|NOX4|HIF1a", rownames(spe)) ## for new spe
+
+stromal_types <- c("stromal_1", "stromal_2", "stromal_3", "stromal_4", 
+                   "stromal_5", "stromal_6", "stromal_7", "stromal_8")
+cur_spe <- spe[, spe$predicted.celltype %in% stromal_types]
+
+celltype_mean <- aggregateAcrossCells(as(cur_spe[rowData(cur_spe)$use_channel_met_markers,], "SingleCellExperiment"),  
+                                              ids = cur_spe$"predicted.celltype", 
+                                              statistics = "mean", 
+                                              use.assay.type = "z_scaled")
+spe_test <- celltype_mean
+genes_use <- intersect(markers_ordered, rownames(spe_test))
+d<-dittoHeatmap(
+  spe_test,
+  assay = "z_scaled",
+  genes = genes_use,
+  cluster_cols = TRUE,
+  cluster_rows = FALSE,
+  heatmap.colors = c(viridis(50), rep("#FDE725FF", 1.5)),
+  annot.by = c("predicted.celltype", "ncells")
+)
+
+d
+
+```
+
+
+```{r transfer_predicted_celltype, message=FALSE, warning=FALSE}
+
+head(colnames(spe))
+head(colData(sfe)$KEY)
+
+# Create a lookup dataframe
+df_map <- data.frame(
+  KEY = colnames(spe),
+  predicted.celltype = spe$predicted.celltype,
+  stringsAsFactors = FALSE
+)
+
+# Align based on shared KEYs
+idx <- match(colData(sfe)$KEY, df_map$KEY)
+
+# Transfer the predicted.celltype column
+colData(sfe)$predicted.celltype <- df_map$predicted.celltype[idx]
+# Check a few transferred entries
+head(colData(sfe)$predicted.celltype)
+
+# Count how many matches were successful
+sum(!is.na(colData(sfe)$predicted.celltype))
+sum(is.na(colData(sfe)$predicted.celltype))
+
+```
+
+```{r sankey plot}
+stromal_types <- paste0("stromal_", 1:8)
+
+df1 <- as.data.frame(S4Vectors::as.data.frame(colData(sfe)))[, c("lv3_anno", "predicted.celltype")]
+df1 <- df1[df1$predicted.celltype %in% stromal_types &
+           !is.na(df1$lv3_anno) & df1$lv3_anno != "", ]
+
+sankey1 <- ggsankey::make_long(df1, lv3_anno, predicted.celltype)
+
+ggplot(sankey1,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 1 – lv3_anno → Predicted Stromal Subclusters",
+       x = NULL, y = NULL) +
+  theme(legend.position = "none")
+
+
+```
+
+```{r create new column}
+sfe$met_state <- ifelse(sfe$predicted.celltype == "stromal_2", "met_hi",
+                 ifelse(sfe$predicted.celltype == "stromal_5", "met_low",
+                 ifelse(grepl("^stromal_", sfe$predicted.celltype), "met_int", NA)))
+
+table(sfe$met_state, useNA = "ifany")
+```
+
+
+```{r sankey plot 2}
+df2 <- as.data.frame(S4Vectors::as.data.frame(colData(sfe)))[, c("lv3_anno", "met_state")]
+df2 <- df2[!is.na(df2$met_state) & !is.na(df2$lv3_anno) & df2$lv3_anno != "", ]
+
+sankey2 <- ggsankey::make_long(df2, lv3_anno, met_state)
+
+ggplot(sankey2,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 2 – lv3_anno → Met State (met_hi / met_low / met_int)",
+       x = NULL, y = NULL, fill = "Met State") +
+  theme(axis.text.x = element_text(size = 10, face = "bold"))
+
+```
+
+```{r sankey plot 3}
+df3 <- subset(df2, met_state %in% c("met_hi", "met_low"))
+sankey3 <- ggsankey::make_long(df3, lv3_anno, met_state)
+
+ggplot(sankey3,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 3 – lv3_anno → Met State (met_hi / met_low only)",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(size = 10, face = "bold"))
+
+```
+
+```{r sankey plot 4}
+df3 <- subset(df2, met_state %in% c("met_hi", "met_low"))
+sankey3 <- ggsankey::make_long(df3, lv3_anno, met_state)
+
+ggplot(sankey3,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 3 – lv3_anno → Met State (met_hi / met_low only)",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(size = 10, face = "bold"))
+
+
+```
+

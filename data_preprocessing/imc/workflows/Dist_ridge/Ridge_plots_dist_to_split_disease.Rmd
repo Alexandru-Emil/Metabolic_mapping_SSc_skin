@@ -1,0 +1,228 @@
+---
+title: "Ridge plot for distance to "
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# Load spe
+
+```{r load spe}
+load(here("spe_list.RData"))
+spe <- spe_list$spe
+
+rm(spe_list)
+
+color_vectors <- list()
+color_vectors$clusters <- setNames(c("#C4281C","#C2DAB8","#E8BAC8","#80BBDB","#C470A0","#0D69AC",
+                                     "#F5CD30","#287F47","#A05F35","#D9856C","#6B327C","#008F9C","#C7D23C","#B7D7D5","#923978",
+                                     "#27462D","#FF9494","#938767","#FFF67B","#E1A4C2","#FC7B1B","#CD6298","#102ADC"), 
+                               as.character(unique(spe$pheno_clusters_new)))
+metadata(spe)$color_vectors <- color_vectors
+
+spe$pheno_clusters_new2 <- case_when(
+  grepl("CD45_CD3",spe$pheno_clusters_new) ~ "CD45",
+  TRUE ~ spe$pheno_clusters_new
+)
+
+unique(spe$pheno_clusters_new2)
+
+spe <- spe[,spe$indication == "SSc"]
+```
+
+# Calculate minimum distance to endothelium (and others)
+
+```{r mindist, echo=TRUE, cache=TRUE}
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels=="CD31+"), 
+                      img_id = "sample_id",
+                      name="distToEndothCells")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels %in% c("CD45+CD68+","CD45+CD68-CD3-","CD45+CD3+","CD45+CD68+CD3+")), 
+                      img_id = "sample_id",
+                      name="distToLeukocytes")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels == "Stromal"), 
+                      img_id = "sample_id",
+                      name="distToStromal")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels == "E-cad+"), 
+                      img_id = "sample_id",
+                      name="distToEpid")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new=="stromal_2"), 
+                      img_id = "sample_id",
+                      name="distToStromal2")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new %in% c("CD31_3")), 
+                      img_id = "sample_id",
+                      name="distToCD31_3")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new == "CD45_CD68_1"), 
+                      img_id = "sample_id",
+                      name="distToCD68_1")
+
+
+spe_not_EC <- spe[,which(!spe$new_celllabels == "CD31+")]
+spe_stromal <- spe[,which(spe$new_celllabels == "Stromal")]
+spe_leukocytes <- spe[,which(spe$new_celllabels %in% c("CD45+CD68+","CD45+CD68-CD3-","CD45+CD3+","CD45+CD68+CD3+"))]
+```
+
+# Ridge plot - distance to endothelium
+
+`r fig_dim=c(6,5)`
+
+```{r ridgeplot 1, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe_stromal))) + 
+    geom_density_ridges(aes(distToEndothCells, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-10,300))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to endothelium")
+
+```
+
+# Ridge plot - distance to leukocytes
+
+```{r ridgeplot 2, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe_stromal))) + 
+    geom_density_ridges(aes(distToLeukocytes, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-10,300))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to leukocytes")
+
+```
+
+# Ridge plot - distance to epidermis
+
+```{r ridgeplot 4, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe_stromal))) + 
+    geom_density_ridges(aes(distToEpid, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-50,500))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to keratinocytes")
+
+```
+
+# Ridge plot - distance to stromal cells
+
+```{r ridgeplot 3, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe))) + 
+    geom_density_ridges(aes(distToStromal, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-50,150))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to stromal cells")
+
+```
+
+
+# Ridge plot - distance to stromal 2
+
+```{r ridgeplot 5, echo=TRUE, fig.dim=fig_dim}
+
+spe_EC <- spe[,which(spe$new_celllabels == "CD31+")]
+
+ggplot(as.data.frame(colData(spe_EC))) + 
+    geom_density_ridges(aes(distToStromal2, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-80,700))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to stromal 2")
+
+spe_Mf <- spe[,which(spe$new_celllabels == "CD45+CD68+")]
+
+ggplot(as.data.frame(colData(spe_Mf))) + 
+    geom_density_ridges(aes(distToStromal2, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-80,700))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to stromal 2")
+
+```
+
+# Ridge plot - distance to CD31 3
+
+```{r ridgeplot 6, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe_stromal))) + 
+    geom_density_ridges(aes(distToCD31_3, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-70,1000))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to CD31 3")
+
+```
+
+
+# Ridge plot - distance to CD68 1
+
+```{r ridgeplot 8, echo=TRUE, fig.dim=fig_dim}
+
+ggplot(as.data.frame(colData(spe_stromal))) + 
+    geom_density_ridges(aes(distToCD68_1, pheno_clusters_new, fill = pheno_clusters_new)) +
+    geom_vline(xintercept = 0, color = "dark red", linewidth = 2) +
+    scale_x_continuous(limits = c(-70,1500))+
+    theme_bw()+
+    scale_fill_manual(values = metadata(spe)$color_vectors$clusters)+
+  ggtitle("Distance to CD68 1")
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Ridge plots of distance of a specific cell type to other cell types. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

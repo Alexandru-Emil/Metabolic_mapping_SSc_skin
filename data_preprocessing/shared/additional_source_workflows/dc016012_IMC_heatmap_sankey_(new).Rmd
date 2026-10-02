@@ -1,0 +1,674 @@
+---
+title: "IMC heatmap sankey plot (new)"
+author: "Veda"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    wrap: 72
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library set up}
+library(SingleCellExperiment)
+library(SpatialExperiment)
+library(DelayedMatrixStats)
+library(dittoSeq)
+library(ggsankey)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(scuttle)
+library(SpatialFeatureExperiment)
+# Assume `sfe` and `spe` objects are already loaded in your environment
+
+```
+
+```{r new IMC Rphenograph_500 heatmap}
+load(project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"))
+sfe<-readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/XeniumSfe_FibAnno_251104104458.rds"))
+
+z<-list("glycolysis"=c(2,30,32,7,15,26),"TCA_cycle"=c(29,24,31,17),"Amino_Acid"=c(8),"Fatty_acid_synthesis"=c(36),
+        "Fatty_acid_oxidation"=(34),"Pentose_Pathway"=12,"anabolic_signaling"=c(9),
+        "catabolic_signaling"=c(21),"Oxidative_stress"=c(37),
+        "hypoxia"=38,"Mitochondrial_biogenesis"=c(22,13,10))
+
+spe$metfiblabel <- case_when(spe$Rphenograph_500=="1"~"Met_hi_Fib",
+                             spe$Rphenograph_500=="2"~"Met_hi_Fib",
+                             spe$Rphenograph_500=="3"~"Met_int_Fib")
+
+markers_ordered <- names(spe)[do.call(c, z)]
+
+rowData(spe)$use_channel_met_markers<-grepl("GLUT1|PKM2|CD98|p_mTOR|pNRF2|G6PD|mtTFA|LDHA|SDHA|pAMPK|PGC1a|OGDH|GAPDH|CS|HK1|ATP5A|PFKL1_PFKM|CPT1a|ACAC|NOX4|HIF1a", rownames(spe)) ## for new spe
+
+celltype_mean <- aggregateAcrossCells(as(spe[rowData(spe)$use_channel_met_markers,], "SingleCellExperiment"),  
+                                              ids = spe$"metfiblabel", 
+                                              statistics = "mean", 
+                                              use.assay.type = "zrescaled")
+
+spe_test <- celltype_mean
+spe_test$metfiblabel <- as.character(spe_test$metfiblabel)
+dittoHeatmap(
+  spe_test,
+  assay = "zrescaled",
+  genes = markers_ordered,
+  cluster_cols = T,
+  cluster_rows = F,
+  #scale = "zscaled",
+  heatmap.colors = c(viridis(50), rep("#FDE725FF", 1.5)),
+  annot.by = c("metfiblabel", 'ncells')
+)
+
+dittoHeatmap(
+  spe_test,
+  assay = "zrescaled",
+  genes = markers_ordered,
+  cluster_cols = TRUE,
+  cluster_rows = FALSE,
+  heatmap.colors = viridis(100),
+  annot.by = c("metfiblabel", "ncells"),
+  scale = "none",
+  breaks = seq(-1, 0.5, length.out = 101)
+)
+
+
+```
+
+```{r data}
+library(SpatialExperiment)
+library(scater)
+library(tidyverse)
+
+spe2 <- spe
+
+spe1 <- readRDS(project_path("Revision/Nan annotation/Data/IMC spe objects/spe_old.rds"))
+#spe2 <- readRDS(project_path("external/spe_final_with_all_gates.rds"))
+spe1$dataset <- 'orig_imc'
+spe2$dataset <- 'postxenium_imc'
+
+
+meta <- dplyr::full_join(
+  dplyr::select(as.data.frame(spe1@colData), ObjectNumber, sample_id, cell_labels, celltype, dataset) %>%
+    mutate(gates = dplyr::case_when(
+      .$cell_labels == 'CD31+' ~ 'Endothelial',
+      .$cell_labels == 'E-cad+' ~ 'Epithelial',
+      .$cell_labels == 'CD45+' ~ 'Immune',
+      .default = .$cell_labels)) %>%
+    mutate(gates = ifelse(startsWith(.$celltype, 'CD45_CD68'), 'Macrophage', .$gates)),
+  dplyr::select(as.data.frame(spe2@colData), ObjectNumber, sample_id, gates, dataset, metfiblabel) 
+)
+ch_used <- rowData(spe1)$use_channel_met_markers
+
+expr <- cbind(assay(spe1, 'z-rescaled_new'), assay(spe2, 'zrescaled'))
+counts <- cbind(assay(spe1, 'counts'), assay(spe2, 'counts'))
+asinh <- cbind(assay(spe1, 'asinh'), assay(spe2, 'asinh'))
+
+merged <- SingleCellExperiment(
+  list(counts = counts, asinh = asinh, expr = expr),
+  colData = meta,
+  rowData = rowData(spe1)
+)
+set.seed(171025)
+merged <- scater::runUMAP(merged, subset_row = ch_used, exprs_values = 'expr', name = 'umap',
+                  BPPARAM = BiocParallel::MulticoreParam())
+
+library(dittoSeq)
+
+dittoDimPlot(merged, var = 'dataset', reduction.use = 'umap')
+dittoDimPlot(merged, var = 'gates', reduction.use = 'umap')
+
+```
+
+# Seurat anchor-based label transfer
+
+## Stromal
+
+```{r stromal-seu, fig.width=12, fig.height=4}
+library(Seurat)
+gate <- 'Stromal'
+
+obj <- merged[,merged$dataset == 'orig_imc' & merged$gates == gate]
+
+assay1 <- CreateAssay5Object(counts = assay(obj, 'counts'), data = assay(obj, 'asinh'))
+
+ref <- CreateSeuratObject(
+  assay1,
+  meta.data = as.data.frame(obj@colData)
+)
+
+ref@assays$RNA$scale.data <- assay(obj, 'expr') %>% `rownames<-`(rownames(ref))
+VariableFeatures(ref) <- rownames(ref)[ch_used]
+# ref <- ScaleData(ref)
+ref <- RunPCA(ref)
+ElbowPlot(ref)
+
+ref <- RunUMAP(ref,  dims = 1:20, return.model = TRUE)
+  
+
+DimPlot(ref, group.by = 'celltype', alpha = .3)
+
+obj <- merged[,merged$dataset == 'postxenium_imc' & merged$gates == gate]
+
+assay(obj, "z_scaled_new") <- t(apply(assay(obj, "asinh"), 1, function(x) (x - mean(x))/sd(x)))
+
+assay2 <- CreateAssay5Object(counts = assay(obj, 'counts'), data = assay(obj, 'asinh'))
+
+query <- CreateSeuratObject(
+  assay2,
+  meta.data = as.data.frame(obj@colData)
+)
+VariableFeatures(query) <- rownames(query)[ch_used]
+query@assays$RNA$scale.data <- assay(obj, 'z_scaled_new') %>% `rownames<-`(rownames(ref))
+query <- RunPCA(query)
+ElbowPlot(query)
+
+anchors <- FindTransferAnchors(reference = ref, query = query, dims = 1:20,
+    reference.reduction  = "pca")
+query <- MapQuery(anchorset = anchors, reference = ref, query = query, reference.dims = 1:20,
+    refdata = list(celltype = "celltype"), reference.reduction = "pca", reduction.model = "umap")
+p1 <- DimPlot(ref, group.by = 'celltype', alpha = .3)
+p2 <- DimPlot(query, group.by = 'predicted.celltype', alpha = .3)
+p3 <- DimPlot(query, group.by = 'metfiblabel', alpha = .3)
+print(p1|p2|p3)
+
+
+merged$predicted.celltype <- NA
+pred <- setNames(query$predicted.celltype, colnames(query))
+lab <- case_when(is.na(merged$predicted.celltype) ~ pred[colnames(merged)],
+                 .default = merged$predicted.celltype)
+merged$predicted.celltype <- lab
+
+table(merged$predicted.celltype)
+table(query$predicted.celltype,query$metfiblabel)
+
+```
+
+
+```{r IMC Rphenograph_500 transfer}
+#load(project_path("external/spe2025-12-17 umap.RData"))
+
+head(colnames(spe))
+head(colData(sfe)$KEY)
+
+unique(colData(spe)$metfiblabel)
+
+# Create a lookup dataframe
+df_map <- data.frame(
+  KEY = colnames(spe),
+  metfiblabel = spe$metfiblabel,
+  stringsAsFactors = FALSE
+)
+
+# Align based on shared KEYs
+idx <- match(colData(sfe)$KEY, df_map$KEY)
+
+# Transfer the predicted.celltype column
+colData(sfe)$metfiblabel <- df_map$metfiblabel[idx]
+# Check a few transferred entries
+head(colData(sfe)$metfiblabel)
+
+# Count how many matches were successful
+sum(!is.na(colData(sfe)$metfiblabel))
+sum(is.na(colData(sfe)$metfiblabel))
+
+
+
+```
+
+```{r new IMC Rphenograph_500 sankey}
+
+df2 <- as.data.frame(S4Vectors::as.data.frame(colData(sfe)))[, c("lv3_anno", "metfiblabel")]
+df2 <- df2[!is.na(df2$lv3_anno) & !is.na(df2$metfiblabel) & df2$lv3_anno != "", ]
+
+sankey3 <- ggsankey::make_long(df2, lv3_anno, metfiblabel)
+
+ggplot(sankey3,
+       aes(x = x, next_x = next_x,
+           node = node, next_node = next_node,
+           fill = node, label = node)) +
+  geom_sankey(flow.alpha = 0.7, node.color = "grey30") +
+  geom_sankey_label(size = 3, color = "black") +
+  theme_minimal() +
+  labs(title = "Sankey 3 – lv3_anno → Met State (met_hi / met_others only)",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(size = 10, face = "bold"))
+
+matching <- as.data.frame(S4Vectors::as.data.frame(colData(sfe)))[, c("lv3_anno", "metfiblabel")]
+matching <- df2[!is.na(df2$lv3_anno) & !is.na(df2$metfiblabel) & df2$lv3_anno != "", ]
+
+# Summarize and calculate frequency
+matching.summary <- matching %>%
+  group_by(across(all_of(colnames(matching)))) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(across(all_of(colnames(matching)[2]))) %>%
+  mutate(tot_cells = sum(count), freq = count / tot_cells) %>%
+  ungroup()
+
+# Identify rare matches (freq < 0.1 or count < 20)
+rare.matches <- matching.summary %>%
+  filter(freq < 0.1 | count < 20) %>%
+  select(all_of(colnames(matching[1:2])))
+
+# Remove rare matches from the original data
+matching.filtered <- matching %>%
+  anti_join(rare.matches, by = colnames(matching)[1:2])
+
+# Create sankey data with filtered matches
+matching.sankey <- make_long(matching.filtered, !!sym(colnames(matching)[1]), !!sym(colnames(matching)[2]))
+
+# Plot the simplified Sankey
+ggplot(
+  matching.sankey,
+  aes(
+    x = x,
+    next_x = next_x,
+    node = node,
+    next_node = next_node,
+    fill = factor(node),
+    label = node
+  )
+) +
+  geom_sankey(flow.alpha = 0.3, node.color = "gray30") +
+  geom_sankey_label(size = 3,
+                    color = "white",
+                    fill = "gray40") +
+  theme_sankey(base_size = 18) +
+  labs(x = NULL) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5))
+
+
+```
+
+```{r dotplot 2}
+
+# genes_use_subset <- c(
+#   "CTHRC1","POSTN","FN1","COL1A1","COL1A2","COL8A1","SFRP4","SFRP2","FAP","LRRC15",
+#   "CCL19","CXCL12","APOE","PI16","LGR5","COL18A1","WIF1","ACTA2"
+# )
+
+genes_use_subset <- unique(c(
+  # your original set
+  "CTHRC1","POSTN","FN1","COL1A1","COL1A2","COL8A1","SFRP4","SFRP2","FAP","LRRC15",
+  "CCL19","CXCL12","APOE","PI16","LGR5","COL18A1","WIF1","ACTA2",
+
+  # pan-fibro / “universal” fibroblasts (often used to define less-activated states)
+  "DCN","LUM","DPT","CD34","PDGFRA",
+  "COL15A1","COL14A1","C7","CFD","CLU","APOD","FBLN1","FBLN2","TNXB",
+
+  # inflammatory fibroblasts (iCAF-like chemokine/cytokine programs)
+  "IL6","IL11","CXCL1","CXCL8","CCL2","CCL20","IL1R1",
+
+  # antigen-presenting fibroblasts (apCAFs; MHC-II module)
+  "CD74","HLA-DRA","HLA-DRB1","HLA-DPA1","HLA-DPB1",
+
+  # profibrotic / myofibroblast-like programs (ECM production, contractility, crosslinking)
+  "CTGF","TGFBI","SERPINE1",
+  "TAGLN","MYL9","CALD1","MYH11",
+  "ITGA11","COL3A1","COL5A1","COL5A2","COL6A1","COL6A2","COL12A1","COL11A1",
+  "SPARC","BGN","THBS1","TNC",
+  "LOX","LOXL2",
+  "MMP2","TIMP1",
+
+  # matrix-remodeling CAF-like programs (often separate from pure myofibroblast markers)
+  "MMP1","MMP3","MMP9"
+))
+
+genes_use_subset_selected <- unique(c(
+  # your original set
+  "FN1","COL8A1","SFRP4","CCL19","APOE","COL18A1","WIF1","ACTA2",
+  
+  # inflammatory fibroblasts (iCAF-like chemokine/cytokine programs)
+  "IL6","IL11","CCL20","IL1R1",
+  
+  # profibrotic / myofibroblast-like programs (ECM production, contractility, crosslinking)
+  "TNC",
+  "LOX","LOXL2",
+  "MMP2","TIMP1",
+
+  # matrix-remodeling CAF-like programs (often separate from pure myofibroblast markers)
+  "MMP9",
+
+  # pan-fibro / “universal” fibroblasts (often used to define less-activated states)
+  "DCN","LUM","DPT","CD34","PDGFRA",
+  "COL14A1","FBLN2","TNXB", "PI16"
+))
+
+# Optional: if you want to explicitly flag pericyte-/mural-like clusters to exclude or separate
+genes_pericyte_like <- c("RGS5","PDGFRB","CSPG4","MCAM","ABCC9","KCNJ8","NOTCH3")
+
+stromal_types <- c("Met_int_Fib", "Met_hi_Fib")
+cur_sfe <- sfe[, sfe$metfiblabel %in% stromal_types]
+
+
+library(Seurat)
+
+seurat_obj <- as.Seurat(
+  cur_sfe,
+  counts = "counts",
+  data   = "logcounts"
+)
+unique(Idents(seurat_obj))
+Idents(seurat_obj) <- "metfiblabel"
+
+# ✅ enforce stromal_1 ... stromal_8 order
+Idents(seurat_obj) <- as.factor(Idents(seurat_obj))#, levels = stromal_types)
+
+## --- Prepare data: only stromal_2, stromal_4, stromal_8 ---
+
+keep_stromal <- c("Met_int_Fib", "Met_hi_Fib")
+#keep_stromal <- unique(seurat_obj$predicted.celltype)
+
+# Idents(seurat_obj) <- factor(
+#   seurat_obj$predicted.celltype,
+#   levels = metfiblabel
+# )
+# 
+ obj_sub <- subset(seurat_obj, idents = keep_stromal)
+
+
+## --- Extract DotPlot data and manually row-scale gene expression ---
+
+ddata1 <- DotPlot(obj_sub, features = genes_use_subset)$data
+ddata2 <- DotPlot(obj_sub, features = genes_use_subset_selected)$data
+
+library(dplyr)
+
+# Row-wise scaling (per gene)
+ddata1 <- ddata1 %>%
+  group_by(features.plot) %>%
+  mutate(avg.exp.scaled = base::scale(avg.exp)[,1]) %>%
+  ungroup()
+
+ddata2 <- ddata2 %>%
+  group_by(features.plot) %>%
+  mutate(avg.exp.scaled = base::scale(avg.exp)[,1]) %>%
+  ungroup()
+
+# Ensure x-axis = stromal clusters in correct order
+ddata1$id <- factor(ddata1$id, levels = keep_stromal)
+ddata2$id <- factor(ddata2$id, levels = keep_stromal)
+
+
+## --- Final plot: x = clusters, y = genes ---
+
+p1 <- ggplot(ddata1, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradientn(colors = rev(RColorBrewer::brewer.pal(7, "RdBu"))) +
+  scale_size(range = c(1, 8)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+p2 <- ggplot(ddata2, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradientn(colors = rev(RColorBrewer::brewer.pal(7, "RdBu"))) +
+  scale_size(range = c(1, 8)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+p1
+p2
+
+
+```
+# ECM scores 1 {.tabset .tabset-pill}
+
+```{r ecm1, results='asis'}
+
+#seurat <- seurat_obj
+
+matrisome <- read.csv(project_path("Revision/Nan annotation/Data/Hs_Matrisome_Masterlist_Naba.csv"))
+ecm_gene <- matrisome %>% filter(`Matrisome.Division` == "Core matrisome")
+ecm_gene <- dplyr::select(ecm_gene, `Matrisome.Category`, `Gene.Symbol`)
+
+## correct gene names in the data set
+`%notin%` <- Negate(`%in%`)
+all(ecm_gene$`Gene.Symbol` %in% rownames(seurat_obj))
+
+ecm_gene$`Gene.Symbol`[which(ecm_gene$`Gene.Symbol` %notin% rownames(seurat_obj))]
+
+ecm_gene <- rbind(ecm_gene,
+                  data.frame(`Matrisome.Category` = rep('CoreMatrisome', nrow(ecm_gene)), 
+                             `Gene.Symbol` = ecm_gene$`Gene.Symbol`))
+
+ecm_list <- split(ecm_gene$`Gene.Symbol`, ecm_gene$`Matrisome.Category`)
+names(ecm_list)[names(ecm_list) == "ECM Glycoproteins"] <- "Glycoproteins"
+ecm_list[["ECM"]] <- pull(ecm_gene, `Gene.Symbol`)
+
+library(decoupleR)
+
+mat <- seurat_obj@assays$originalexp$data
+scores <- run_aucell(mat, ecm_gene, minsize = 0, .source = `Matrisome.Category`, .target = `Gene.Symbol`, nproc = 1)
+
+seurat_obj[['Naba_matrisome_aucell']] <- scores %>%
+  tidyr::pivot_wider(id_cols = 'source', names_from = 'condition', values_from = 'score') %>%
+  dplyr::mutate(source = paste0(source, ' score')) %>%
+  tibble::column_to_rownames(var = 'source') %>%
+  Seurat::CreateAssayObject(.)
+
+#seurat <- AddModuleScore(seurat, ecm_list, name = 'ECM_score', ctrl = 10)
+
+
+Seurat::DefaultAssay(object = seurat_obj) <- "Naba_matrisome_aucell"
+
+for (i in rownames(seurat_obj)) {
+  cat('\n\n##', i, '\n\n')
+  p <- FeaturePlot(
+    seurat_obj,
+    i,
+    reduction = 'umap_fib',
+    cols = c('#dcdcdc90', 'darkred'),
+    order = T,
+    alpha = .3
+  )
+  p2 <- VlnPlot(seurat_obj, features = i, group.by = 'metfiblabel', pt.size = .00001, alpha = .01, sort = T) + NoLegend()
+ # p3 <- VlnPlot(seurat_obj, features = i, group.by = 'metfiblabel', split.by = 'Indication', pt.size = .00001, alpha = .01, sort = T)
+  print(p)
+  print(p2)
+ # print(p3)
+  cat('\n\n')
+}
+
+#   for (j in seq_along(ecm_list)) {
+#     colnames(seurat@meta.data)[which(colnames(seurat@meta.data) == paste0('ECM_score', j))] <- paste0(names(ecm_list)[j], '_score')
+#   }
+# p <- VlnPlot(seurat, grep('_score', colnames(seurat@meta.data), value = TRUE), 
+#                group.by = 'metfiblabel', combine = FALSE, pt.size = .2, alpha = .2)
+#   plot_list <- lapply(p, function(plot) {
+#     plot + theme(legend.position = "none")
+# })
+# for (j in seq_along(plot_list)) {
+#     cat("\n\n### ", names(ecm_list)[j], '\n')
+#     print(plot_list[[j]])
+#   }
+```
+
+
+
+```{r dotplot 3}
+
+# genes_use_subset <- c(
+#   "CTHRC1","POSTN","FN1","COL1A1","COL1A2","COL8A1","SFRP4","SFRP2","FAP","LRRC15",
+#   "CCL19","CXCL12","APOE","PI16","LGR5","COL18A1","WIF1", "ACTA2"
+# )
+
+stromal_types <- c("Met_int_Fib", "Met_hi_Fib")
+cur_sfe <- sfe[, sfe$metfiblabel %in% stromal_types]
+
+cur_sfe$lv3_by_met <- paste(cur_sfe$lv3_anno, cur_sfe$metfiblabel, sep = "_")
+cur_sfe$lv3_by_met <- factor(cur_sfe$lv3_by_met)
+
+table(cur_sfe$lv3_by_met)
+
+
+library(Seurat)
+
+
+seurat_obj <- as.Seurat(
+  cur_sfe,
+  counts = "counts",
+  data   = "logcounts"
+)
+unique(Idents(seurat_obj))
+Idents(seurat_obj) <- "lv3_by_met"
+
+# ✅ enforce stromal_1 ... stromal_8 order
+Idents(seurat_obj) <- as.factor(Idents(seurat_obj))#, levels = stromal_types)
+
+## --- Prepare data: only stromal_2, stromal_4, stromal_8 ---
+
+keep_stromal <- c(
+  "papillary_Fib_Met_int_Fib",
+  "papillary_Fib_Met_hi_Fib",
+  "PI16_Fib_Met_int_Fib",
+  "PI16_Fib_Met_hi_Fib"
+  # "CXCL12_Fib_Met_int_Fib",
+  # "CXCL12_Fib_Met_hi_Fib",
+  # "COL8A1_Fib_Met_int_Fib",
+  # "COL8A1_Fib_Met_hi_Fib",
+  # "CCL19_Fib_Met_int_Fib",
+  # "CCL19_Fib_Met_hi_Fib",
+  # "SPARC_Fib_Met_int_Fib",
+  # "SPARC_Fib_Met_hi_Fib",
+  # "COCH_Fib_Met_int_Fib",
+  # "COCH_Fib_Met_hi_Fib",
+  # "NGFR_Fib_Met_int_Fib",
+  # "NGFR_Fib_Met_hi_Fib"
+)
+#keep_stromal <- unique(seurat_obj$predicted.celltype)
+
+Idents(seurat_obj) <- factor(
+  seurat_obj$lv3_by_met,
+  levels = keep_stromal
+)
+
+ obj_sub <- subset(seurat_obj, idents = keep_stromal)
+
+
+## --- Extract DotPlot data and manually row-scale gene expression ---
+
+ddata <- DotPlot(obj_sub, features = genes_use_subset_selected)$data
+
+library(dplyr)
+
+# Row-wise scaling (per gene)
+ddata <- ddata %>%
+  group_by(features.plot) %>%
+  mutate(avg.exp.scaled = base::scale(avg.exp)[,1]) %>%
+  ungroup()
+
+# Ensure x-axis = stromal clusters in correct order
+ddata$id <- factor(ddata$id, levels = keep_stromal)
+
+
+## --- Final plot: x = clusters, y = genes ---
+
+p <- ggplot(ddata, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradientn(colors = rev(RColorBrewer::brewer.pal(7, "RdBu"))) +
+  scale_size(range = c(1, 8)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+p
+
+
+```
+# ECM scores 2 {.tabset .tabset-pill}
+
+```{r ecm2, results='asis'}
+
+matrisome <- read.csv(project_path("Revision/Nan annotation/Data/Hs_Matrisome_Masterlist_Naba.csv"))
+ecm_gene <- matrisome %>% filter(`Matrisome.Division` == "Core matrisome")
+ecm_gene <- dplyr::select(ecm_gene, `Matrisome.Category`, `Gene.Symbol`)
+
+## correct gene names in the data set
+`%notin%` <- Negate(`%in%`)
+all(ecm_gene$`Gene.Symbol` %in% rownames(seurat_obj))
+
+ecm_gene$`Gene.Symbol`[which(ecm_gene$`Gene.Symbol` %notin% rownames(seurat_obj))]
+
+ecm_gene <- rbind(ecm_gene,
+                  data.frame(`Matrisome.Category` = rep('CoreMatrisome', nrow(ecm_gene)), 
+                             `Gene.Symbol` = ecm_gene$`Gene.Symbol`))
+
+library(decoupleR)
+
+keep_stromal <- c(
+  "papillary_Fib_Met_int_Fib",
+  "papillary_Fib_Met_hi_Fib",
+  "PI16_Fib_Met_int_Fib",
+  "PI16_Fib_Met_hi_Fib",
+  "CXCL12_Fib_Met_int_Fib",
+  "CXCL12_Fib_Met_hi_Fib",
+  "COL8A1_Fib_Met_int_Fib",
+  "COL8A1_Fib_Met_hi_Fib",
+  "CCL19_Fib_Met_int_Fib",
+  "CCL19_Fib_Met_hi_Fib",
+  "SPARC_Fib_Met_int_Fib",
+  "SPARC_Fib_Met_hi_Fib",
+  "COCH_Fib_Met_int_Fib",
+  "COCH_Fib_Met_hi_Fib",
+  "NGFR_Fib_Met_int_Fib",
+  "NGFR_Fib_Met_hi_Fib"
+)
+#keep_stromal <- unique(seurat_obj$predicted.celltype)
+
+Idents(seurat_obj) <- factor(
+  seurat_obj$lv3_by_met,
+  levels = keep_stromal
+)
+
+ obj_sub <- subset(seurat_obj, idents = keep_stromal)
+
+mat <- obj_sub@assays$originalexp$data
+scores <- run_aucell(mat, ecm_gene, minsize = 0, .source = `Matrisome.Category`, .target = `Gene.Symbol`, nproc = 1)
+
+obj_sub[['Naba_matrisome_aucell']] <- scores %>%
+  tidyr::pivot_wider(id_cols = 'source', names_from = 'condition', values_from = 'score') %>%
+  dplyr::mutate(source = paste0(source, ' score')) %>%
+  tibble::column_to_rownames(var = 'source') %>%
+  Seurat::CreateAssayObject(.)
+
+
+Seurat::DefaultAssay(object = obj_sub) <- "Naba_matrisome_aucell"
+
+obj_sub$lv3_by_met <- factor(obj_sub$lv3_by_met, levels=keep_stromal)
+
+for (i in rownames(obj_sub)) {
+  cat('\n\n##', i, '\n\n')
+  p <- FeaturePlot(
+    obj_sub,
+    i,
+    reduction = 'umap_fib',
+    cols = c('#dcdcdc90', 'darkred'),
+    order = T,
+    alpha = .3
+  )
+  p2 <- VlnPlot(obj_sub, features = i, group.by = "lv3_by_met", pt.size = .00001, alpha = .01, sort = F) + NoLegend()
+ # p3 <- VlnPlot(seurat_obj, features = i, group.by = 'metfiblabel', split.by = 'Indication', pt.size = .00001, alpha = .01, sort = T)
+  print(p)
+  print(p2)
+ # print(p3)
+  cat('\n\n')
+}
+```

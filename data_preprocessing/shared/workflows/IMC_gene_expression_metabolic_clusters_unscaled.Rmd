@@ -1,0 +1,317 @@
+---
+title: "Unscaled and differential gene expression across metabolic clusters"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r prepare_data}
+library(SingleCellExperiment)
+library(SpatialExperiment)
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(Matrix)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(RColorBrewer)
+library(scales)
+
+output_dir <- project_path("Revision/Nan annotation/Data/RMD files/gene_expression_metabolic_cluster_outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+load(project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"))
+sfe <- readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds"))
+
+spe$metfiblabel <- dplyr::case_when(
+  spe$Rphenograph_500 %in% c("1", "2") ~ "Met_hi_Fib",
+  spe$Rphenograph_500 == "3" ~ "Other_Fib",
+  TRUE ~ NA_character_
+)
+
+df_map <- data.frame(
+  KEY = colnames(spe),
+  metfiblabel = spe$metfiblabel,
+  stringsAsFactors = FALSE
+)
+
+idx <- match(SummarizedExperiment::colData(sfe)$KEY, df_map$KEY)
+sfe$metfiblabel <- df_map$metfiblabel[idx]
+
+genes_use_subset_selected <- unique(c(
+  "ACTA2", "COL8A1", "FN1", "SFRP4", "CCL19", "COL18A1", "WIF1",
+  "IL6", "IL11", "CCL20", "IL1R1",
+  "TNC", "LOX", "LOXL2", "MMP2", "TIMP1",
+  "DCN", "LUM", "PDGFRA", "DPT",
+  "PI16", "CD34",
+  "FBLN2"
+))
+
+to_dgC <- function(x) {
+  if (inherits(x, "dgCMatrix")) return(x)
+  x <- as(x, "CsparseMatrix")
+  as(x, "dgCMatrix")
+}
+
+keep_stromal <- c("Other_Fib", "Met_hi_Fib")
+cur_sfe <- sfe[, sfe$metfiblabel %in% keep_stromal]
+
+SummarizedExperiment::assay(cur_sfe, "counts") <- to_dgC(SummarizedExperiment::assay(cur_sfe, "counts"))
+SummarizedExperiment::assay(cur_sfe, "logcounts") <- to_dgC(SummarizedExperiment::assay(cur_sfe, "logcounts"))
+
+seurat_obj <- as.Seurat(
+  cur_sfe,
+  counts = "counts",
+  data = "logcounts"
+)
+
+Seurat::Idents(seurat_obj) <- factor(seurat_obj$metfiblabel, levels = keep_stromal)
+obj_sub <- subset(seurat_obj, idents = keep_stromal)
+
+ddata <- Seurat::DotPlot(
+  obj_sub,
+  features = genes_use_subset_selected,
+  scale = FALSE
+)$data
+
+ddata <- ddata %>%
+  mutate(
+    id = factor(id, levels = keep_stromal),
+    features.plot = factor(features.plot, levels = genes_use_subset_selected),
+    avg.exp.raw = avg.exp
+  )
+
+raw_color_limits <- c(0, 3)
+
+raw_fill_colors <- c("#fff7f3", "#fcae91", "#de2d26", "#7f0000")
+
+dot_plot_unscaled <- ggplot(ddata, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.raw)) +
+  scale_color_gradientn(
+    colors = raw_fill_colors,
+    limits = raw_color_limits,
+    oob = scales::squish,
+    name = "Mean expression"
+  ) +
+  scale_size(range = c(1, 8), name = "% expressing") +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+heatmap_unscaled <- ggplot(ddata, aes(x = id, y = features.plot, fill = avg.exp.raw)) +
+  geom_tile(color = "white", linewidth = 0.45) +
+  scale_fill_gradientn(
+    colors = raw_fill_colors,
+    limits = raw_color_limits,
+    oob = scales::squish,
+    name = "Mean expression"
+  ) +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+diff_data <- ddata %>%
+  select(features.plot, id, avg.exp.raw, pct.exp) %>%
+  mutate(id = as.character(id)) %>%
+  tidyr::pivot_wider(
+    names_from = id,
+    values_from = c(avg.exp.raw, pct.exp),
+    names_sep = "__"
+  )
+
+pseudocount <- min(ddata$avg.exp.raw[ddata$avg.exp.raw > 0], na.rm = TRUE) / 2
+if (!is.finite(pseudocount) || pseudocount <= 0) {
+  pseudocount <- 1e-6
+}
+
+diff_data <- diff_data %>%
+  transmute(
+    features.plot = as.character(features.plot),
+    contrast = "Met_hi_Fib /\nOther_Fib",
+    mean_expression_other = .data[["avg.exp.raw__Other_Fib"]],
+    mean_expression_met_hi = .data[["avg.exp.raw__Met_hi_Fib"]],
+    pct_expression_other = .data[["pct.exp__Other_Fib"]],
+    pct_expression_met_hi = .data[["pct.exp__Met_hi_Fib"]],
+    log2FC = log2((mean_expression_met_hi + pseudocount) / (mean_expression_other + pseudocount)),
+    delta_pct_expression = pct_expression_met_hi - pct_expression_other
+  ) %>%
+  mutate(
+    abs_log2FC = abs(log2FC),
+    features.plot = factor(features.plot, levels = features.plot[order(log2FC)])
+  )
+
+fc_limit <- 2
+
+fc_scale_colors <- c("#2166AC", "white", "#B2182B")
+fc_legend_title <- "log2FC\nMet_hi / Other"
+
+differential_dot_plot <- ggplot(diff_data, aes(x = contrast, y = features.plot)) +
+  geom_point(aes(size = abs_log2FC, color = log2FC)) +
+  scale_color_gradient2(
+    low = fc_scale_colors[1],
+    mid = fc_scale_colors[2],
+    high = fc_scale_colors[3],
+    midpoint = 0,
+    limits = c(-fc_limit, fc_limit),
+    oob = scales::squish,
+    name = fc_legend_title
+  ) +
+  scale_size(range = c(2.5, 10), name = "|log2FC|") +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+differential_heatmap <- ggplot(diff_data, aes(x = contrast, y = features.plot, fill = log2FC)) +
+  geom_tile(color = "white", linewidth = 0.45, width = 0.8) +
+  scale_fill_gradient2(
+    low = fc_scale_colors[1],
+    mid = fc_scale_colors[2],
+    high = fc_scale_colors[3],
+    midpoint = 0,
+    limits = c(-fc_limit, fc_limit),
+    oob = scales::squish,
+    name = fc_legend_title
+  ) +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+diff_data_dotplot_order <- diff_data %>%
+  mutate(features.plot = factor(as.character(features.plot), levels = genes_use_subset_selected))
+
+differential_dot_plot_dotplot_order <- ggplot(diff_data_dotplot_order, aes(x = contrast, y = features.plot)) +
+  geom_point(aes(size = abs_log2FC, color = log2FC)) +
+  scale_color_gradient2(
+    low = fc_scale_colors[1],
+    mid = fc_scale_colors[2],
+    high = fc_scale_colors[3],
+    midpoint = 0,
+    limits = c(-fc_limit, fc_limit),
+    oob = scales::squish,
+    name = fc_legend_title
+  ) +
+  scale_size(range = c(2.5, 10), name = "|log2FC|") +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+differential_heatmap_dotplot_order <- ggplot(diff_data_dotplot_order, aes(x = contrast, y = features.plot, fill = log2FC)) +
+  geom_tile(color = "white", linewidth = 0.45, width = 0.8) +
+  scale_fill_gradient2(
+    low = fc_scale_colors[1],
+    mid = fc_scale_colors[2],
+    high = fc_scale_colors[3],
+    midpoint = 0,
+    limits = c(-fc_limit, fc_limit),
+    oob = scales::squish,
+    name = fc_legend_title
+  ) +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 18, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 18),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  )
+
+ggsave(file.path(output_dir, "selected_gene_dotplot_unscaled_raw_mean.pdf"), dot_plot_unscaled, width = 6, height = 6)
+ggsave(file.path(output_dir, "selected_gene_heatmap_unscaled_raw_mean.pdf"), heatmap_unscaled, width = 6, height = 6)
+ggsave(file.path(output_dir, "selected_gene_differential_dotplot_log2fc.pdf"), differential_dot_plot, width = 6, height = 6)
+ggsave(file.path(output_dir, "selected_gene_differential_heatmap_log2fc.pdf"), differential_heatmap, width = 6, height = 6)
+ggsave(file.path(output_dir, "selected_gene_differential_dotplot_log2fc_dotplot_order.pdf"), differential_dot_plot_dotplot_order, width = 6, height = 6)
+ggsave(file.path(output_dir, "selected_gene_differential_heatmap_log2fc_dotplot_order.pdf"), differential_heatmap_dotplot_order, width = 6, height = 6)
+
+if (requireNamespace("svglite", quietly = TRUE)) {
+  ggsave(file.path(output_dir, "selected_gene_dotplot_unscaled_raw_mean.svg"), dot_plot_unscaled, width = 6, height = 6)
+  ggsave(file.path(output_dir, "selected_gene_heatmap_unscaled_raw_mean.svg"), heatmap_unscaled, width = 6, height = 6)
+  ggsave(file.path(output_dir, "selected_gene_differential_dotplot_log2fc.svg"), differential_dot_plot, width = 6, height = 6)
+  ggsave(file.path(output_dir, "selected_gene_differential_heatmap_log2fc.svg"), differential_heatmap, width = 6, height = 6)
+  ggsave(file.path(output_dir, "selected_gene_differential_dotplot_log2fc_dotplot_order.svg"), differential_dot_plot_dotplot_order, width = 6, height = 6)
+  ggsave(file.path(output_dir, "selected_gene_differential_heatmap_log2fc_dotplot_order.svg"), differential_heatmap_dotplot_order, width = 6, height = 6)
+}
+
+write.csv(ddata, file.path(output_dir, "selected_gene_dotplot_unscaled_summary.csv"), row.names = FALSE)
+write.csv(diff_data, file.path(output_dir, "selected_gene_differential_log2fc_summary.csv"), row.names = FALSE)
+```
+
+# Selected Gene Expression Across Metabolic Clusters {.tabset .tabset-pill}
+
+## Dot Plot
+
+```{r dotplot_unscaled, fig.width=6, fig.height=6}
+dot_plot_unscaled
+```
+
+## Heatmap
+
+```{r heatmap_unscaled, fig.width=6, fig.height=6}
+heatmap_unscaled
+```
+
+## Differential Dot Plot
+
+```{r differential_dotplot_log2fc, fig.width=6, fig.height=6}
+differential_dot_plot
+```
+
+## Differential Heatmap
+
+```{r differential_heatmap_log2fc, fig.width=6, fig.height=6}
+differential_heatmap
+```
+
+## Differential Dot Plot - Dot Plot Order
+
+```{r differential_dotplot_log2fc_dotplot_order, fig.width=6, fig.height=6}
+differential_dot_plot_dotplot_order
+```
+
+## Differential Heatmap - Dot Plot Order
+
+```{r differential_heatmap_log2fc_dotplot_order, fig.width=6, fig.height=6}
+differential_heatmap_dotplot_order
+```

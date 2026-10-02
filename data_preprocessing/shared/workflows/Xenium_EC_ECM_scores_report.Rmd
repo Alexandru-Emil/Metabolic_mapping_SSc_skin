@@ -1,0 +1,528 @@
+---
+title: "Xenium EC ECM scores"
+author: "Codex"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  dev = "png",
+  dpi = 300,
+  fig.retina = 2,
+  dev.args = list(bg = "white")
+)
+```
+
+```{r libraries}
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(Matrix)
+library(decoupleR)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(knitr)
+```
+
+```{r configuration}
+sfe_path <- project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds")
+matrisome_path <- project_path("Revision/Nan annotation/Data/Hs_Matrisome_Masterlist_Naba.csv")
+output_dir <- file.path(getwd(), "xenium_ec_ecm_score_outputs")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+ec_lv2_levels <- c(
+  "ACKR1_EC",
+  "ACTA2_EC",
+  "cycling_EC",
+  "EPC",
+  "HEY1_EC",
+  "lymphatic_EC"
+)
+
+score_levels <- c(
+  "CoreMatrisome score",
+  "Collagens score",
+  "ECM Glycoproteins score",
+  "Proteoglycans score"
+)
+
+score_labels <- c(
+  "CoreMatrisome score" = "Core\nmatrisome",
+  "Collagens score" = "Collagens",
+  "ECM Glycoproteins score" = "ECM\nglycoproteins",
+  "Proteoglycans score" = "Proteoglycans"
+)
+
+ec_colors <- c(
+  "ACKR1_EC" = "#4C78A8",
+  "ACTA2_EC" = "#E45756",
+  "cycling_EC" = "#72B7B2",
+  "EPC" = "#F58518",
+  "HEY1_EC" = "#54A24B",
+  "lymphatic_EC" = "#B279A2"
+)
+
+to_dgC <- function(x) {
+  if (inherits(x, "dgCMatrix")) return(x)
+  x <- as(x, "CsparseMatrix")
+  as(x, "dgCMatrix")
+}
+
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || rng[1] == rng[2]) {
+    return(rep(0.5, length(x)))
+  }
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+
+format_p <- function(p_value) {
+  dplyr::case_when(
+    is.na(p_value) ~ "p = NA",
+    p_value < 0.001 ~ "p < 0.001",
+    TRUE ~ paste0("p = ", formatC(p_value, format = "f", digits = 3))
+  )
+}
+
+save_plot_set <- function(plot, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  ggplot2::ggsave(png_file, plot, width = width, height = height, dpi = 300, bg = "white")
+
+  grDevices::pdf(pdf_file, width = width, height = height, useDingbats = FALSE, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+```
+
+# Data And ECM Score Setup
+
+```{r prepare_ec_data}
+if (!exists("sfe")) {
+  sfe <- readRDS(sfe_path)
+}
+
+if (!"lv2_anno_new" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain lv2_anno_new.")
+}
+
+sfe_coldata <- as.data.frame(SummarizedExperiment::colData(sfe))
+sample_col <- dplyr::case_when(
+  "sample_id" %in% colnames(sfe_coldata) ~ "sample_id",
+  "SampleId" %in% colnames(sfe_coldata) ~ "SampleId",
+  "SampleID" %in% colnames(sfe_coldata) ~ "SampleID",
+  TRUE ~ NA_character_
+)
+
+keep_ec <- !is.na(sfe_coldata[["lv2_anno_new"]]) &
+  sfe_coldata[["lv2_anno_new"]] %in% ec_lv2_levels
+
+sfe_ec <- sfe[, keep_ec]
+sfe_ec$lv2_anno_new <- factor(as.character(sfe_ec$lv2_anno_new), levels = ec_lv2_levels)
+
+ec_counts <- as.data.frame(table(lv2_anno_new = as.character(sfe_ec$lv2_anno_new))) %>%
+  dplyr::filter(Freq > 0) %>%
+  dplyr::mutate(lv2_anno_new = factor(lv2_anno_new, levels = ec_lv2_levels)) %>%
+  dplyr::arrange(lv2_anno_new)
+
+write.csv(ec_counts, file.path(output_dir, "xenium_ec_ecm_lv2_counts.csv"), row.names = FALSE)
+
+kable(ec_counts)
+```
+
+```{r matrisome_network}
+matrisome <- read.csv(matrisome_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+ecm_core <- matrisome %>%
+  dplyr::filter(`Matrisome Division` == "Core matrisome") %>%
+  dplyr::transmute(
+    source = `Matrisome Category`,
+    target = `Gene Symbol`
+  )
+
+ecm_network <- dplyr::bind_rows(
+  ecm_core,
+  ecm_core %>% dplyr::transmute(source = "CoreMatrisome", target = target)
+) %>%
+  dplyr::distinct(source, target)
+
+gene_universe <- rownames(sfe_ec)
+
+gene_availability <- ecm_network %>%
+  dplyr::group_by(source) %>%
+  dplyr::summarise(
+    n_genes = dplyr::n_distinct(target),
+    n_detected = sum(unique(target) %in% gene_universe),
+    detected_fraction = n_detected / n_genes,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(score = paste0(source, " score")) %>%
+  dplyr::filter(score %in% score_levels) %>%
+  dplyr::mutate(score = factor(score, levels = score_levels)) %>%
+  dplyr::arrange(score)
+
+write.csv(gene_availability, file.path(output_dir, "xenium_ec_ecm_gene_availability.csv"), row.names = FALSE)
+
+kable(gene_availability, digits = 3)
+```
+
+```{r run_ecm_aucell}
+score_cache <- file.path(output_dir, "xenium_ec_ecm_aucell_scores.rds")
+
+if (file.exists(score_cache)) {
+  ecm_scores <- readRDS(score_cache)
+} else {
+  expr_mat <- to_dgC(SummarizedExperiment::assay(sfe_ec, "logcounts"))
+
+  ecm_scores <- decoupleR::run_aucell(
+    mat = expr_mat,
+    network = ecm_network,
+    minsize = 0,
+    .source = source,
+    .target = target,
+    nproc = 1
+  )
+
+  saveRDS(ecm_scores, score_cache)
+}
+```
+
+```{r score_tables}
+ec_meta <- as.data.frame(SummarizedExperiment::colData(sfe_ec))
+ec_meta$cell <- colnames(sfe_ec)
+ec_meta$sample_id <- if (!is.na(sample_col) && sample_col %in% colnames(ec_meta)) {
+  as.character(ec_meta[[sample_col]])
+} else {
+  NA_character_
+}
+
+score_long <- ecm_scores %>%
+  dplyr::transmute(
+    score_name = paste0(source, " score"),
+    cell = as.character(condition),
+    score = as.numeric(score)
+  ) %>%
+  dplyr::filter(score_name %in% score_levels) %>%
+  dplyr::left_join(
+    ec_meta %>%
+      dplyr::transmute(
+        cell,
+        sample_id,
+        lv2_anno_new = as.character(lv2_anno_new)
+      ),
+    by = "cell"
+  ) %>%
+  dplyr::filter(!is.na(lv2_anno_new), lv2_anno_new %in% ec_lv2_levels) %>%
+  dplyr::mutate(
+    score_name = factor(score_name, levels = score_levels),
+    lv2_anno_new = factor(lv2_anno_new, levels = ec_lv2_levels)
+  )
+
+score_summary <- score_long %>%
+  dplyr::group_by(score_name, lv2_anno_new) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id[!is.na(sample_id) & sample_id != ""]),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+sample_summary <- score_long %>%
+  dplyr::filter(!is.na(sample_id), sample_id != "") %>%
+  dplyr::group_by(sample_id, score_name, lv2_anno_new) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+single_cell_kruskal <- score_long %>%
+  dplyr::group_by(score_name) %>%
+  dplyr::summarise(
+    n_groups = dplyr::n_distinct(lv2_anno_new),
+    p_value = stats::kruskal.test(score ~ lv2_anno_new)$p.value,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    p_adjust_bh = stats::p.adjust(p_value, method = "BH"),
+    p_label = format_p(p_adjust_bh)
+  )
+
+acta2_pairwise_tests <- dplyr::bind_rows(lapply(levels(score_long$score_name), function(cur_score) {
+  dplyr::bind_rows(lapply(setdiff(ec_lv2_levels, "ACTA2_EC"), function(cur_group) {
+    cur_df <- score_long %>%
+      dplyr::filter(score_name == cur_score, lv2_anno_new %in% c("ACTA2_EC", cur_group)) %>%
+      dplyr::mutate(compare_group = factor(as.character(lv2_anno_new), levels = c(cur_group, "ACTA2_EC")))
+
+    if (dplyr::n_distinct(cur_df$compare_group) < 2) {
+      return(data.frame())
+    }
+
+    data.frame(
+      score_name = cur_score,
+      comparison = paste0("ACTA2_EC vs ", cur_group),
+      n_reference = sum(cur_df$compare_group == cur_group),
+      n_acta2 = sum(cur_df$compare_group == "ACTA2_EC"),
+      median_reference = median(cur_df$score[cur_df$compare_group == cur_group], na.rm = TRUE),
+      median_acta2 = median(cur_df$score[cur_df$compare_group == "ACTA2_EC"], na.rm = TRUE),
+      difference_median_acta2_minus_reference =
+        median(cur_df$score[cur_df$compare_group == "ACTA2_EC"], na.rm = TRUE) -
+        median(cur_df$score[cur_df$compare_group == cur_group], na.rm = TRUE),
+      p_value = stats::wilcox.test(score ~ compare_group, data = cur_df, exact = FALSE)$p.value,
+      stringsAsFactors = FALSE
+    )
+  }))
+})) %>%
+  dplyr::group_by(score_name) %>%
+  dplyr::mutate(
+    p_adjust_bh = stats::p.adjust(p_value, method = "BH"),
+    p_label = format_p(p_adjust_bh)
+  ) %>%
+  dplyr::ungroup()
+
+write.csv(score_long, file.path(output_dir, "xenium_ec_ecm_cell_scores.csv"), row.names = FALSE)
+write.csv(score_summary, file.path(output_dir, "xenium_ec_ecm_lv2_summary.csv"), row.names = FALSE)
+write.csv(sample_summary, file.path(output_dir, "xenium_ec_ecm_sample_summary.csv"), row.names = FALSE)
+write.csv(single_cell_kruskal, file.path(output_dir, "xenium_ec_ecm_single_cell_kruskal_tests.csv"), row.names = FALSE)
+write.csv(acta2_pairwise_tests, file.path(output_dir, "xenium_ec_ecm_acta2_pairwise_wilcox_tests.csv"), row.names = FALSE)
+```
+
+# Summary Tables
+
+```{r summary_table}
+kable(score_summary, digits = 4)
+```
+
+```{r single_cell_test_tables}
+kable(single_cell_kruskal, digits = 4)
+kable(acta2_pairwise_tests, digits = 4)
+```
+
+The tests above are exploratory single-cell distribution tests. They do not
+model sample nesting, so the effect sizes and plots should carry more weight
+than the p values.
+
+# Mean ECM Scores
+
+```{r dotplots, fig.width=8.2, fig.height=4.6}
+make_ecm_dotplot <- function(summary_df, scale_by_score = FALSE) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = rev(score_levels)),
+      lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels)
+    )
+
+  if (isTRUE(scale_by_score)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(score_name) %>%
+      dplyr::mutate(
+        fill_score = rescale01(mean_score),
+        size_score = fill_score
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Score-scaled mean"
+    plot_title <- "EC ECM scores across Xenium EC annotations, scaled"
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        fill_score = mean_score,
+        size_score = rescale01(mean_score)
+      )
+    legend_title <- "Mean AUCell score"
+    plot_title <- "EC ECM scores across Xenium EC annotations"
+  }
+
+  ggplot(plot_df, aes(x = lv2_anno_new, y = score_name)) +
+    geom_point(
+      aes(fill = fill_score, size = size_score),
+      shape = 21,
+      color = "grey35",
+      stroke = 0.35
+    ) +
+    scale_y_discrete(labels = score_labels) +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = legend_title) +
+    scale_size(range = c(4.5, 11.5), guide = "none") +
+    labs(title = plot_title, x = NULL, y = NULL) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 12, face = "bold", angle = 35, hjust = 1),
+      axis.text.y = element_text(size = 12.5, lineheight = 0.95),
+      legend.position = "right",
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10.5),
+      panel.grid.major = element_line(color = "grey88"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 15.5, hjust = 0.5, margin = margin(b = 6)),
+      plot.margin = margin(5.5, 6, 5.5, 5.5)
+    )
+}
+
+p_dot_raw <- make_ecm_dotplot(score_summary, scale_by_score = FALSE)
+p_dot_scaled <- make_ecm_dotplot(score_summary, scale_by_score = TRUE)
+
+save_plot_set(p_dot_raw, "xenium_ec_ecm_dotplot_raw", width = 8.2, height = 4.6)
+save_plot_set(p_dot_scaled, "xenium_ec_ecm_dotplot_score_scaled", width = 8.2, height = 4.6)
+
+p_dot_raw
+p_dot_scaled
+```
+
+```{r heatmaps, fig.width=8.2, fig.height=4.8}
+heatmap_raw_df <- score_summary %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = rev(score_levels)),
+    lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels)
+  )
+
+heatmap_scaled_df <- score_summary %>%
+  dplyr::group_by(score_name) %>%
+  dplyr::mutate(mean_z = as.numeric(base::scale(mean_score))) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = rev(score_levels)),
+    lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels)
+  )
+
+p_heatmap_raw <- ggplot(heatmap_raw_df, aes(x = lv2_anno_new, y = score_name, fill = mean_score)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  scale_y_discrete(labels = score_labels) +
+  scale_fill_gradient(low = "white", high = "#D7301F", name = "Mean AUCell") +
+  labs(title = "Mean EC ECM AUCell scores", x = NULL, y = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold", angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 12.5, lineheight = 0.95),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 15.5, hjust = 0.5)
+  )
+
+p_heatmap_scaled <- ggplot(heatmap_scaled_df, aes(x = lv2_anno_new, y = score_name, fill = mean_z)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  scale_y_discrete(labels = score_labels) +
+  scale_fill_gradient2(low = "#3B6FB6", mid = "white", high = "#D7301F", midpoint = 0, name = "Row z") +
+  labs(title = "Mean EC ECM AUCell scores, row-scaled", x = NULL, y = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold", angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 12.5, lineheight = 0.95),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 15.5, hjust = 0.5)
+  )
+
+save_plot_set(p_heatmap_raw, "xenium_ec_ecm_heatmap_raw", width = 8.2, height = 4.8)
+save_plot_set(p_heatmap_scaled, "xenium_ec_ecm_heatmap_row_scaled", width = 8.2, height = 4.8)
+
+p_heatmap_raw
+p_heatmap_scaled
+```
+
+# Cell-Level Distributions
+
+```{r distribution_plots, fig.width=10, fig.height=6.8}
+p_violin <- score_long %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = score_levels),
+    lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels)
+  ) %>%
+  ggplot(aes(x = lv2_anno_new, y = score, fill = lv2_anno_new)) +
+  geom_violin(width = 0.86, alpha = 0.72, color = "grey30", trim = TRUE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, fill = "white", color = "grey15", linewidth = 0.4) +
+  facet_wrap(~ score_name, ncol = 2, scales = "free_y", labeller = labeller(score_name = score_labels)) +
+  scale_fill_manual(values = ec_colors) +
+  labs(title = "Single-cell EC ECM score distributions", x = NULL, y = "AUCell score", fill = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 11, face = "bold", angle = 35, hjust = 1),
+    strip.text = element_text(size = 12.5, face = "bold"),
+    legend.position = "none",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+p_density <- score_long %>%
+  dplyr::mutate(score_name = factor(as.character(score_name), levels = score_levels)) %>%
+  ggplot(aes(x = score, color = lv2_anno_new, fill = lv2_anno_new)) +
+  geom_density(alpha = 0.13, linewidth = 0.75, adjust = 1.05) +
+  facet_wrap(~ score_name, ncol = 2, scales = "free", labeller = labeller(score_name = score_labels)) +
+  scale_color_manual(values = ec_colors) +
+  scale_fill_manual(values = ec_colors) +
+  labs(title = "EC ECM score density by Xenium annotation", x = "AUCell score", y = "Density", color = NULL, fill = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 12.5, face = "bold"),
+    legend.position = "bottom",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+save_plot_set(p_violin, "xenium_ec_ecm_violin_box", width = 10, height = 6.8)
+save_plot_set(p_density, "xenium_ec_ecm_density", width = 10, height = 6.8)
+
+p_violin
+p_density
+```
+
+# Sample Means
+
+```{r sample_mean_plot, fig.width=10, fig.height=6.4}
+if (nrow(sample_summary) > 0) {
+  p_sample <- sample_summary %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = score_levels),
+      lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels)
+    ) %>%
+    ggplot(aes(x = lv2_anno_new, y = mean_score, color = lv2_anno_new)) +
+    geom_point(aes(size = n_cells), alpha = 0.82, position = position_jitter(width = 0.09, height = 0)) +
+    facet_wrap(~ score_name, ncol = 2, scales = "free_y", labeller = labeller(score_name = score_labels)) +
+    scale_color_manual(values = ec_colors) +
+    scale_size_continuous(range = c(2, 6), name = "Cells per sample") +
+    labs(title = "Sample-level EC ECM score means", x = NULL, y = "Mean AUCell score", color = NULL) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 11, face = "bold", angle = 35, hjust = 1),
+      strip.text = element_text(size = 12.5, face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(size = 16, hjust = 0.5)
+    )
+
+  save_plot_set(p_sample, "xenium_ec_ecm_sample_mean_dots", width = 10, height = 6.4)
+  p_sample
+} else {
+  cat("No sample identifier was available for the EC subset.")
+}
+```
+
+# Output Files
+
+```{r output_files}
+output_files <- data.frame(
+  file = sort(list.files(output_dir, full.names = FALSE)),
+  stringsAsFactors = FALSE
+)
+kable(output_files)
+```

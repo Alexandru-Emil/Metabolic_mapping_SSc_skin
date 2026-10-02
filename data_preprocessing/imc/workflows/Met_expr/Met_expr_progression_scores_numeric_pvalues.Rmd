@@ -1,0 +1,426 @@
+---
+title: "First-cohort metabolic scores by skin progression"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  dev = "png",
+  dpi = 300
+)
+```
+
+```{r packages-and-paths}
+suppressPackageStartupMessages({
+  library(SpatialExperiment)
+  library(SummarizedExperiment)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(ggplot2)
+  library(ggpubr)
+  library(rstatix)
+  library(svglite)
+})
+
+data_path <- paste0(
+  paste0(project_path(""), "/"),
+  "IMC_metabolic_analysis_AEM/spe_list.RData"
+)
+
+report_path <- knitr::current_input(dir = TRUE)
+report_dir <- dirname(normalizePath(report_path, winslash = "/", mustWork = TRUE))
+plot_dir <- file.path(
+  report_dir,
+  "Met_expr_progression_scores_numeric_pvalues_plots"
+)
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Analysis definition
+
+This focused report reproduces the four first-cohort score plots used in the
+figure. Epithelial cells are excluded as in the original analysis. Each point
+is one donor. Glycolysis and TCA/OXPHOS are donor medians and use the original
+unadjusted Dunn comparisons (`p.adjust.method = "none"`). HIF1A and NOX4 are
+donor means from the `z-rescaled` protein assay and use the original exact,
+unadjusted Wilcoxon rank-sum comparisons. Numerical raw p-values are shown
+instead of significance symbols.
+
+```{r prepare-data}
+input_env <- new.env(parent = emptyenv())
+load(data_path, envir = input_env)
+spe <- input_env$spe_list$spe
+rm(input_env)
+
+cell_data <- as.data.frame(colData(spe), check.names = FALSE)
+keep <- as.character(cell_data$new_celllabels) != "E-cad+"
+
+group_levels <- c("Healthy", "Progressive SSc", "Stable SSc")
+group_palette <- c(
+  "Healthy" = "#B9DCE8",
+  "Progressive SSc" = "#C03830",
+  "Stable SSc" = "#F6BF93"
+)
+
+cell_scores <- tibble(
+  group = recode(
+    as.character(cell_data$Skin.progression.at.biopsy[keep]),
+    healthy = "Healthy",
+    progressive = "Progressive SSc",
+    stable = "Stable SSc"
+  ),
+  donor = as.character(cell_data$patient_id[keep]),
+  Glycolysis = as.numeric(cell_data$Glycolysis_z_c[keep]),
+  `TCA/OXPHOS` = as.numeric(cell_data$TCA_z_c[keep]),
+  `Hypoxia signaling` = as.numeric(
+    assay(spe, "z-rescaled")["HIF1a", keep]
+  ),
+  `ROS signaling` = as.numeric(
+    assay(spe, "z-rescaled")["NOX4", keep]
+  )
+) %>%
+  filter(!is.na(group), !is.na(donor)) %>%
+  mutate(group = factor(group, levels = group_levels))
+
+donor_scores <- cell_scores %>%
+  group_by(group, donor) %>%
+  summarise(
+    Glycolysis = median(Glycolysis, na.rm = TRUE),
+    `TCA/OXPHOS` = median(`TCA/OXPHOS`, na.rm = TRUE),
+    `Hypoxia signaling` = mean(`Hypoxia signaling`, na.rm = TRUE),
+    `ROS signaling` = mean(`ROS signaling`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(Glycolysis, `TCA/OXPHOS`, `Hypoxia signaling`, `ROS signaling`),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  mutate(
+    score = factor(
+      score,
+      levels = c(
+        "Glycolysis",
+        "TCA/OXPHOS",
+        "Hypoxia signaling",
+        "ROS signaling"
+      )
+    )
+  )
+
+format_numeric_p <- function(p) {
+  case_when(
+    p < 0.001 ~ sprintf("p = %.2e", p),
+    p < 0.01 ~ sprintf("p = %.5f", p),
+    p < 0.1 ~ sprintf("p = %.4f", p),
+    TRUE ~ sprintf("p = %.3f", p)
+  )
+}
+
+overall_tests <- donor_scores %>%
+  group_by(score) %>%
+  kruskal_test(value ~ group) %>%
+  ungroup() %>%
+  mutate(p_label = format_numeric_p(p))
+
+dunn_tests <- donor_scores %>%
+  filter(score %in% c("Glycolysis", "TCA/OXPHOS")) %>%
+  group_by(score) %>%
+  dunn_test(value ~ group, p.adjust.method = "none") %>%
+  ungroup() %>%
+  mutate(method = "Dunn; unadjusted")
+
+pairwise_group_levels <- combn(group_levels, 2, simplify = FALSE)
+
+wilcox_tests <- bind_rows(lapply(
+  c("Hypoxia signaling", "ROS signaling"),
+  function(score_name) {
+    bind_rows(lapply(pairwise_group_levels, function(comparison) {
+      comparison_data <- donor_scores %>%
+        filter(
+          as.character(score) == score_name,
+          as.character(group) %in% comparison
+        )
+
+      x <- comparison_data$value[
+        as.character(comparison_data$group) == comparison[[1]]
+      ]
+      y <- comparison_data$value[
+        as.character(comparison_data$group) == comparison[[2]]
+      ]
+      test_result <- stats::wilcox.test(x, y, exact = TRUE)
+
+      tibble(
+        score = score_name,
+        group1 = comparison[[1]],
+        group2 = comparison[[2]],
+        n1 = length(x),
+        n2 = length(y),
+        statistic = unname(test_result$statistic),
+        p = test_result$p.value,
+        method = "Exact Wilcoxon rank-sum; unadjusted"
+      )
+    }))
+  }
+))
+
+pairwise_tests <- bind_rows(dunn_tests, wilcox_tests) %>%
+  mutate(
+    score = factor(
+      score,
+      levels = c(
+        "Glycolysis",
+        "TCA/OXPHOS",
+        "Hypoxia signaling",
+        "ROS signaling"
+      )
+    )
+  ) %>%
+  group_by(score) %>%
+  mutate(
+    score_max = max(donor_scores$value[donor_scores$score == first(score)]),
+    score_min = min(donor_scores$value[donor_scores$score == first(score)]),
+    score_span = pmax(score_max - score_min, 0.25),
+    comparison_level = if_else(
+      group1 == "Healthy" & group2 == "Stable SSc",
+      2,
+      1
+    ),
+    y.position = score_max + score_span * (
+      0.13 + 0.19 * (comparison_level - 1)
+    ),
+    p_label = format_numeric_p(p)
+  ) %>%
+  ungroup()
+
+write.csv(
+  overall_tests,
+  file.path(plot_dir, "overall_kruskal_wallis_pvalues.csv"),
+  row.names = FALSE
+)
+write.csv(
+  dunn_tests,
+  file.path(plot_dir, "pairwise_dunn_unadjusted_pvalues.csv"),
+  row.names = FALSE
+)
+write.csv(
+  pairwise_tests,
+  file.path(plot_dir, "pairwise_unadjusted_pvalues.csv"),
+  row.names = FALSE
+)
+```
+
+# Numerical p-values
+
+```{r statistical-tables}
+overall_tests %>%
+  select(score, n, statistic, df, p, p_label)
+
+pairwise_tests %>%
+  select(score, group1, group2, n1, n2, method, statistic, p, p_label)
+```
+
+# Figure panels
+
+```{r build-plots}
+score_titles <- c(
+  "Glycolysis" = "Glycolysis score",
+  "TCA/OXPHOS" = "TCA/OXPHOS score",
+  "Hypoxia signaling" = "Hypoxia signaling",
+  "ROS signaling" = "ROS signaling"
+)
+
+make_score_plot <- function(score_name) {
+  plot_data <- donor_scores %>% filter(score == score_name)
+  plot_stats <- pairwise_tests %>% filter(score == score_name)
+
+  ggplot(plot_data, aes(x = group, y = value, fill = group)) +
+    geom_boxplot(
+      width = 0.58,
+      outlier.shape = NA,
+      color = "#4D4D4D",
+      linewidth = 0.55
+    ) +
+    geom_point(
+      position = position_jitter(width = 0.07, height = 0, seed = 2026),
+      size = 2.3,
+      shape = 16,
+      color = "black"
+    ) +
+    stat_pvalue_manual(
+      plot_stats,
+      label = "p_label",
+      xmin = "group1",
+      xmax = "group2",
+      y.position = "y.position",
+      hide.ns = FALSE,
+      tip.length = 0.012,
+      bracket.size = 0.45,
+      size = 3.5
+    ) +
+    scale_fill_manual(values = group_palette, drop = FALSE) +
+    scale_y_continuous(expand = expansion(mult = c(0.08, 0.08))) +
+    coord_cartesian(clip = "off") +
+    labs(
+      title = unname(score_titles[score_name]),
+      x = NULL,
+      y = "score (z-rescaled)"
+    ) +
+    theme_classic(base_size = 12) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(
+        face = "bold",
+        size = 13,
+        hjust = 0.5,
+        margin = margin(b = 8)
+      ),
+      axis.title.y = element_text(face = "bold", size = 11),
+      axis.text.x = element_text(
+        angle = 38,
+        hjust = 1,
+        vjust = 1,
+        size = 10,
+        color = "#333333"
+      ),
+      axis.text.y = element_text(size = 10, color = "#333333"),
+      axis.line = element_line(linewidth = 0.5, color = "#333333"),
+      axis.ticks = element_line(linewidth = 0.45, color = "#333333"),
+      legend.position = "none",
+      plot.margin = margin(12, 18, 12, 12)
+    )
+}
+
+plot_names <- levels(donor_scores$score)
+score_plots <- setNames(lapply(plot_names, make_score_plot), plot_names)
+
+combined_score_plots <- lapply(
+  score_plots,
+  function(plot) {
+    plot +
+      scale_x_discrete(
+        labels = c(
+          "Healthy" = "Healthy",
+          "Progressive SSc" = "Progressive\nSSc",
+          "Stable SSc" = "Stable\nSSc"
+        )
+      ) +
+      theme(
+        axis.text.x = element_text(
+          angle = 25,
+          hjust = 1,
+          vjust = 1,
+          size = 9.5,
+          color = "#333333"
+        ),
+        plot.margin = margin(12, 28, 14, 28)
+      )
+  }
+)
+
+combined_plot <- ggarrange(
+  plotlist = combined_score_plots,
+  ncol = 2,
+  nrow = 2,
+  align = "hv"
+)
+
+save_plot <- function(plot, stem, width, height) {
+  ggsave(
+    file.path(plot_dir, paste0(stem, ".svg")),
+    plot,
+    width = width,
+    height = height,
+    units = "in",
+    device = svglite::svglite,
+    bg = "white"
+  )
+  ggsave(
+    file.path(plot_dir, paste0(stem, ".pdf")),
+    plot,
+    width = width,
+    height = height,
+    units = "in",
+    device = cairo_pdf,
+    bg = "white"
+  )
+  ggsave(
+    file.path(plot_dir, paste0(stem, ".png")),
+    plot,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 450,
+    bg = "white"
+  )
+}
+
+invisible(mapply(
+  FUN = function(plot, stem) save_plot(plot, stem, 4.7, 4.4),
+  plot = score_plots,
+  stem = c(
+    "glycolysis_score_numeric_pvalues",
+    "tca_oxphos_score_numeric_pvalues",
+    "hypoxia_signaling_numeric_pvalues",
+    "ros_signaling_numeric_pvalues"
+  ),
+  SIMPLIFY = FALSE
+))
+
+save_plot(
+  combined_plot,
+  "first_cohort_four_scores_numeric_pvalues",
+  width = 10.8,
+  height = 8.8
+)
+```
+
+```{r combined-plot, echo=FALSE, fig.width=10.8, fig.height=8.8}
+combined_plot
+```
+
+## Individual panels {.tabset .tabset-pill}
+
+### Glycolysis
+
+```{r glycolysis-panel, echo=FALSE, fig.width=4.7, fig.height=4.4}
+score_plots[["Glycolysis"]]
+```
+
+### TCA/OXPHOS
+
+```{r tca-panel, echo=FALSE, fig.width=4.7, fig.height=4.4}
+score_plots[["TCA/OXPHOS"]]
+```
+
+### Hypoxia signaling
+
+```{r hypoxia-panel, echo=FALSE, fig.width=4.7, fig.height=4.4}
+score_plots[["Hypoxia signaling"]]
+```
+
+### ROS signaling
+
+```{r ros-panel, echo=FALSE, fig.width=4.7, fig.height=4.4}
+score_plots[["ROS signaling"]]
+```
+
+# Session information
+
+```{r session-info}
+sessionInfo()
+```

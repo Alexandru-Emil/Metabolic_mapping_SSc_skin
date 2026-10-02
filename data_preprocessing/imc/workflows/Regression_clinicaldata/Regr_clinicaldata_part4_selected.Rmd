@@ -1,0 +1,983 @@
+---
+title: "Heatmap regression models clinical data"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = FALSE, root.dir = here::here())
+
+plan_future_fx(memory_fraction = 0.3, workers = 4)
+options(future.seed = TRUE)
+```
+
+```{r timestamp, eval=TRUE}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# Load spe
+
+```{r load spe, eval=TRUE}
+spe <- readRDS(here("Datasets/spe20250127174306.rds"))
+```
+
+# Prepare spe for analysis
+
+```{r prep spe, eval=TRUE}
+
+# Create a new data frame with all the colData of the spe object - to recode the patient_id column
+
+metadata <- colData(spe)
+
+# add a new column to metadata called Donor where you recode the patient_id column
+# the elements starting with NH should be called Healthy1, Healthy2, etc.
+# the elements starting with SSc should be called SSc1, SSc2, etc.
+metadata$Donor <- dplyr::recode(
+  metadata$patient_id,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+
+metadata$Disease <- dplyr::recode(metadata$indication, NH = "Healthy", SSc =
+                                    "SSc")
+
+# Assign the new columns in metadata to the spe object
+spe$Donor <- metadata$Donor
+spe$Disease <- metadata$Disease
+
+# Verify the assignment
+unique(spe$Donor)
+unique(spe$Disease)
+
+```
+
+# Preparing data for heatmap
+
+```{r preparing data, eval=TRUE}
+
+clinical <- readxl::read_xlsx(here("Clinical data_AEM.xlsx")) %>% filter(`Subtype (dc/lc)` !=
+                                                                           "healthy")
+clinical$Donor <- dplyr::recode(
+  clinical$`Label in metabolic panel`,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+
+clinical$`Subtype (dc/lc)` <- dplyr::recode(clinical$`Subtype (dc/lc)`,
+                                            dcSSc = 0,
+                                            lcSSc = 1)
+
+clinical$`Skin progression at biopsy` <- dplyr::recode(clinical$`Skin progression at biopsy`,
+                                                       stable = 0,
+                                                       progressive = 1)
+
+clinical$`Early or not` <- dplyr::recode(clinical$`Early or not`, late =
+                                           0, early = 1)
+
+clinical$`current DU` <- dplyr::recode(clinical$`current DU`,
+                                       "no DU" = 0,
+                                       "current DU" = 1)
+
+clinical$`DU history` <- dplyr::recode(clinical$`DU history`,
+                                       "no DU history" = 0,
+                                       "DU history" = 1)
+
+clinical$`Myositis` <- dplyr::recode(clinical$`Myositis`,
+                                     "no myositis" = 0,
+                                     "myositis" = 1)
+
+clinical$`Arthritis` <- dplyr::recode(clinical$`Arthritis`,
+                                      "no arthritis" = 0,
+                                      "arthritis" = 1)
+
+clinical$`CRP(mg/l)(5.2mg/l)` <- dplyr::recode(
+  clinical$`CRP(mg/l)(5.2mg/l)`,
+  "6,1" = "6.1",
+  "1,7" = "1.7",
+  "<5.2" = "5.2"
+)
+clinical$`CRP(mg/l)(5.2mg/l)` <- as.numeric(clinical$`CRP(mg/l)(5.2mg/l)`)
+clinical$CRP <- clinical$`CRP(mg/l)(5.2mg/l)`
+
+binary <- c(
+  "Subtype (dc/lc)",
+  "Skin progression at biopsy",
+  "Early or not",
+  "current DU",
+  "DU history",
+  "Myositis",
+  "Arthritis",
+  "ILD"
+)
+
+for (i in binary) {
+  clinical[i] <- as.logical(pull(clinical, i))
+}
+colSums(clinical[binary], na.rm = TRUE)
+# exclude parameters with less than 3 samples
+binary <- names(which(colSums(clinical[binary], na.rm = TRUE) >= 2))
+binary <- c("Gender", binary)
+
+
+# define cell types for which to calculate frequencies
+unique(spe$new_celllabels)
+celltypes_interest <- c("Stromal", "CD31+", "CD45+CD68+", "CD45+CD3+")
+
+coldata_df_hasNeigh <- spe$hasNeigh_df
+for (i in colnames(coldata_df_hasNeigh)) {
+  spe[[i]] <- coldata_df_hasNeigh[[i]]
+}
+
+clinical_vars <- c(
+  binary,
+  "current mRSS",
+  "Age at the time of biopsy (years)",
+  "EUSTAR score (2017)",
+  "non-RP disease duration",
+  "CRP"
+)
+
+```
+
+# Calculating linear regression models and preparing heatmaps
+
+```{r calculate lm and prep heatmap, cache=FALSE}
+# Iterate over the unique labels and apply the function
+freq_clusters_list_lm <- lm_model_clinical_data_fx(
+  spe = spe,
+  var_analysis = "pheno_clusters_new2",
+  disease_var = "Disease",
+  disease_var_value = "SSc",
+  donor_var = "Donor",
+  clinical_data = clinical,
+  clinical_vars = clinical_vars,
+  subset_spe = TRUE,
+  var_subset = "new_celllabels",
+  value_var_subset = celltypes_interest
+)
+
+freq_neighbourhood_list_lm <- lm_model_clinical_data_fx (
+  spe = spe,
+  var_analysis = "CN_10_aggNbh_delaunay_80_new",
+  disease_var = "Disease",
+  disease_var_value = "SSc",
+  donor_var = "Donor",
+  clinical_data = clinical,
+  clinical_vars = clinical_vars,
+  subset_spe = FALSE,
+  var_subset = NULL,
+  value_var_subset = NULL
+)
+
+# calculate lm for cells that have CD68_1 as neighbours splitted per cell type (stromal, CD31 ...)
+
+
+freq_has_neigh_list_lm <- setNames(future_lapply(names(coldata_df_hasNeigh), function(neigh_var) {
+  has_x_neigh <- sub("^has_", "with_", neigh_var)
+  
+  spe[["celltype_has_neigh"]] <- as.character(spe[["pheno_clusters_new2"]])
+  
+  # For those fibroblasts that have the specific neighbour:
+spe[["celltype_has_neigh"]][spe[[neigh_var]] == has_x_neigh] <- paste0(
+  spe[["pheno_clusters_new2"]][spe[[neigh_var]] == has_x_neigh],
+  "_",
+  has_x_neigh
+)
+
+# For those that do not have this neighbour, optionally mark them differently:
+spe[["celltype_has_neigh"]][spe[[neigh_var]] != has_x_neigh] <- paste0(
+  spe[["pheno_clusters_new2"]][spe[[neigh_var]] != has_x_neigh],
+  "_no_",
+  has_x_neigh
+)
+  
+  plot <- tryCatch({
+    lm_model_clinical_data_fx(
+      spe = spe,
+      var_analysis = "celltype_has_neigh",
+      disease_var = "Disease",
+      disease_var_value = "SSc",
+      donor_var = "Donor",
+      clinical_data = clinical,
+      clinical_vars = clinical_vars,
+      subset_spe = TRUE,
+      var_subset = "new_celllabels",
+      value_var_subset = celltypes_interest
+    )
+  }, error = function(e) {
+    message(paste("Skipping plot for:", neigh_var, "-", e$message))
+    return(NULL)  # Return NULL to indicate no plot generated
+  })
+  return(plot)
+}),
+names(coldata_df_hasNeigh)
+)
+
+```
+
+# Logistic regression models for binary outcomes - **SKIPPED**
+
+```{r lm}
+# ## logistic regression models for binary clinical outcome
+### Less statistical power -> use linear models ###
+
+# glm.res <- data.frame()
+# for (i in binary) {
+#   if (i != "gender") {
+#     for (j in unique(spe.fib$cell_clusters2)) {
+#       formula <- as.formula(paste(i, " ~ PercentOfStromal" ))
+#       temp <- data[data$label == j, c("label", "PercentOfStromal", i), ]
+#       
+#       # Check if there are enough observations for the test
+#       if (sum(temp[["label"]] == j) > 1) {
+#         res <- tryCatch({
+#           glm.summary <- summary(glm(formula, family = 'binomial', data = temp))
+#           glm.summary$coefficients
+#         }, error = function(e) {
+#           message("Error in glm() for combination: ", i, " and cluster: ", j)
+#           return(NULL)
+#         })
+#         
+#         if (!is.null(res)) {
+#           res_temp <- data.frame(
+#             cluster = j,
+#             clinical_par = i,
+#             p_value = res[2,4],
+#             glm.estimate = res[2,1]
+#           )
+#           glm.res <- rbind(glm.res, res_temp)
+#         } else {
+#           message("No successful results for glm() for combination: ", i, " and cluster: ", j)
+#         }
+#       }
+#     }
+#   }
+# }
+# glm.res[glm.res$p_value < 0.2,]
+
+# linear regression models for all clinical outcome
+# lm.res <- data.frame()
+# for (i in c(binary, "current mRSS", "Age at the time of biopsy (years)", 
+#             "EUSTAR score (2017)", "non-RP disease duration", "CRP")) {
+#   if (i != "Gender") {
+#     for (j in unique(spe.fib$pheno_clusters_new)) {
+#       temp <- data[data$label == j, c("label", "PercentOfStromal", i), ]
+#       # Check if there are enough observations for the test
+#       if (sum(temp[["label"]] == j) > 1) {
+#         res <- tryCatch({
+#           formula <- as.formula(paste0("PercentOfStromal ~ `", i, "`"))
+#           summary(lm(formula = formula, data = temp))
+#         }, error = function(e) {
+#           message("Error in lm() for combination: ", i, " and cluster: ", j)
+#           return(NULL)
+#         })
+#         
+#         if (!is.null(res)) {
+#           res_temp <- data.frame(
+#             cluster = j,
+#             clinical_par = i,
+#             p_value = res$coefficients[2,'Pr(>|t|)'],
+#             lm.estimate = res$coefficients[2,'Estimate']
+#           )
+#           lm.res <- rbind(lm.res, res_temp)
+#         } else {
+#           message("No successful results for lm() for combination: ", i, " and cluster: ", j)
+#         }
+#       }
+#     }
+#   }
+# }
+# lm.res[lm.res$p_value < 0.2,]
+# lm.res$log.p_value <- -log10(lm.res$p_value)
+# mt <- lm.res %>% tidyr::pivot_wider(id_cols = c('cluster'), names_from = 'clinical_par', values_from = 'log.p_value') %>%
+#   #filter(cluster %in% c('MyoFib', 'FAPhigh', 'Thy1+ADAM12highPU1high', 'S1PR+', 'ADAM12+Gli1+')) %>%
+#   column_to_rownames('cluster') %>% 
+#   #select(-DU_history) %>% 
+#   as.matrix()
+
+```
+
+# Plot heatmaps freq clusters {.tabset .tabset-pills}
+
+```{r plot heatmap and regression plots freq clusters, results='asis'}
+
+for (i in names(freq_clusters_list_lm)) {
+  cat("## ", i, "\n\n")
+  print(freq_clusters_list_lm[[i]][["heatmap"]])
+  cat("\n\n")
+}
+
+```
+
+# Plot heatmaps freq neighbourhoods {.tabset .tabset-pills}
+
+```{r plot heatmap and regression plots nbh, results='asis'}
+
+cat("## Neighbourhoods\n\n")
+print(freq_neighbourhood_list_lm[["heatmap"]])
+
+```
+
+# Plot heatmaps freq has neighbour {.tabset .tabset-pills}
+
+```{r plot heatmap and regression plots has neighbour, results='asis'}
+
+for (i in names(freq_has_neigh_list_lm)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(freq_has_neigh_list_lm[[i]])) {
+    cat("### ", j, "\n\n")
+    print(freq_has_neigh_list_lm[[i]][[j]][["heatmap"]])
+    cat("\n\n")
+  }
+  cat("\n\n")
+}
+
+```
+
+
+# Correlation plots with ggscater
+
+```{r corr plots, cache=FALSE}
+
+coldata_df_hasNeigh <- coldata_df_hasNeigh %>% select(!starts_with("has_CD45_CD3"))
+
+for (neigh_var in names(coldata_df_hasNeigh)) {
+  has_x_neigh <- sub("^has_", "with_", neigh_var)
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]] <- NA
+  
+  # For those fibroblasts that have the specific neighbour:
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]][spe[[neigh_var]] == has_x_neigh] <- paste0(spe[["pheno_clusters_new2"]][spe[[neigh_var]] == has_x_neigh], "_", has_x_neigh)
+  
+  # For those that do not have this neighbour, optionally mark them differently:
+  # spe[["celltype_has_neigh"]][spe[[neigh_var]] != has_x_neigh] <- paste0(spe[["lv3.anno_bank"]][spe[[neigh_var]] != has_x_neigh], "_no_", has_x_neigh)
+}
+
+names_coldata_df_celltype_hasNeigh <- grep("^pheno_clusters_new2_has", colnames(colData(spe)),value=TRUE)
+
+names(clinical) <- sanitize_filename_fx(names(clinical))
+
+names(clinical)
+
+clinical_values_plot <- c(
+  "current_mRSS",
+  "Age_at_the_time_of_biopsy_years",
+  "EUSTAR_score_2017",
+  "non_RP_disease_duration",
+  "CRP"
+)
+
+clusters_var <- grep("^stromal", unique(spe$pheno_clusters_new2), value = TRUE)
+
+plot_list_stromal <- setNames(future_lapply(clinical_values_plot, function(clinical_var_name) {
+  # Assign names to the inner list based on var_analysis
+  setNames(lapply(clusters_var, function(cluster_var) {
+    plot_spearman_clinical_data_fx(
+      spe = spe,
+      subset_vars = list(
+        "new_celllabels" = c("Stromal"),
+        Disease = c("SSc")
+      ),
+      var_analysis = "pheno_clusters_new2",
+      value_analysis =  cluster_var,
+      disease_var = "Disease",
+      donor_var = "Donor",
+      clinical_data = clinical,
+      clinical_var = clinical_var_name
+    )
+  }), clusters_var  # Inner list names
+  )
+}),
+  clinical_values_plot  # Outer list names
+)
+
+```
+
+```{r corr plots nbh, cache=FALSE}
+plot_list_nbh <- setNames(future_lapply(clinical_values_plot, function(clinical_var_name) {
+  # Assign names to the inner list based on var_analysis
+  setNames(lapply(unique(spe$CN_10_aggNbh_delaunay_80_new), function(cluster_var) {
+    plot_spearman_clinical_data_fx(
+      spe = spe,
+      subset_vars = list(
+        Disease = c("SSc")
+      ),
+      var_analysis = "CN_10_aggNbh_delaunay_80_new",
+      value_analysis =  cluster_var,
+      disease_var = "Disease",
+      donor_var = "Donor",
+      clinical_data = clinical,
+      clinical_var = clinical_var_name
+    )
+  }), clusters_var  # Inner list names
+  )
+}),
+  clinical_values_plot  # Outer list names
+)
+```
+
+```{r corr plots hasnbh, cache=FALSE}
+plot_list_stromal_hasneigh <- setNames(future_lapply(clinical_values_plot, function(clinical_var_name) {
+  # Outer list: clinical_var_name
+  setNames(lapply(clusters_var, function(cluster_var) {
+    # Middle list: cluster_var
+    setNames(lapply(names(coldata_df_hasNeigh), function(neigh_var) {
+      # Inner list: neigh_var
+      
+      # Create the subset_vars list
+      subset_vars <- list("new_celllabels" = c("Stromal"),
+                          "Disease" = c("SSc"))
+      
+      match_index <- match(colnames(spe[, spe[["pheno_clusters_new2"]] == cluster_var]), colnames(spe))
+      spe[["celltype_hasNeigh"]] <- rep(NA, ncol(spe))
+      spe[["celltype_hasNeigh"]][match_index] <- spe[, spe[["pheno_clusters_new2"]] ==
+                                                       cluster_var][[neigh_var]]
+      
+      plot <- tryCatch({
+        plot_spearman_clinical_data_fx(
+          spe = spe,
+          subset_vars = subset_vars,
+          var_analysis = "celltype_hasNeigh",
+          # Remains constant
+          value_analysis = na.omit(unique(spe[["celltype_hasNeigh"]]))[1],
+          # Remains as cluster_var
+          disease_var = "Disease",
+          donor_var = "Donor",
+          clinical_data = clinical,
+          clinical_var = clinical_var_name
+        )
+      }, error = function(e) {
+        message(
+          paste(
+            "Skipping plot for:",
+            clinical_var_name,
+            cluster_var,
+            neigh_var,
+            "-",
+            e$message
+          )
+        )
+        return(NULL)  # Return NULL to indicate no plot generated
+      })
+      
+      return(plot)
+      
+    }), names(coldata_df_hasNeigh)  # Assign names to the inner list based on has_neigh
+    )
+  }), clusters_var  # Assign names to the middle list based on clusters_var
+  )
+},
+future.globals = list(
+  spe = spe,
+  clinical = clinical,
+  clusters_var = clusters_var,
+  coldata_df_hasNeigh = coldata_df_hasNeigh,
+  get_common_boxplot_components_fx = get_common_boxplot_components_fx,
+  plot_categorical_clinical_data_fx = plot_categorical_clinical_data_fx
+)
+),
+clinical_values_plot  # Assign names to the outer list based on clinical_values_plot
+)
+
+```
+
+# Plot correlation plots frequency stromal cells {.tabset .tabset-pills}
+
+```{r plot corr plot freq str, results='asis'}
+
+for (i in names(plot_list_stromal)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_stromal[[i]])) {
+    cat("### ", j, "\n\n")
+    print(plot_list_stromal[[i]][[j]])
+    cat("\n\n")
+  }
+}
+
+```
+
+# Plot correlation plots frequency CN {.tabset .tabset-pills}
+
+```{r plot corr plot freq CN, results='asis'}
+
+for (i in names(plot_list_nbh)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_nbh[[i]])) {
+    cat("### ", j, "\n\n")
+    print(plot_list_nbh[[i]][[j]])
+    cat("\n\n")
+  }
+}
+```
+
+# Plot correlation plots frequency stromal cells with neighbours {.tabset .tabset-pills}
+
+```{r plot corr plot freq str has neigh, results='asis'}
+
+for (i in names(plot_list_stromal_hasneigh)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_stromal_hasneigh[[i]])) {
+    cat("### ", j, "{.tabset .tabset-pills}\n\n")
+    for (k in names(plot_list_stromal_hasneigh[[i]][[j]])) {
+      cat("#### ", k, "\n\n")
+      print(plot_list_stromal_hasneigh[[i]][[j]][[k]])
+      cat("\n\n")
+    }
+  }
+}
+
+```
+   
+# Boxplots for categorical clinical data
+
+```{r boxplots, cache=FALSE}
+
+coldata_df_hasNeigh <- coldata_df_hasNeigh %>% select(!starts_with("has_CD45_CD3"))
+
+for (neigh_var in names(coldata_df_hasNeigh)) {
+  has_x_neigh <- sub("^has_", "with_", neigh_var)
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]] <- NA
+  
+  # For those fibroblasts that have the specific neighbour:
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]][spe[[neigh_var]] == has_x_neigh] <- paste0(spe[["pheno_clusters_new2"]][spe[[neigh_var]] == has_x_neigh], "_", has_x_neigh)
+  
+  # For those that do not have this neighbour, optionally mark them differently:
+  # spe[["celltype_has_neigh"]][spe[[neigh_var]] != has_x_neigh] <- paste0(spe[["lv3.anno_bank"]][spe[[neigh_var]] != has_x_neigh], "_no_", has_x_neigh)
+}
+
+names_coldata_df_celltype_hasNeigh <- grep("^pheno_clusters_new2_has", colnames(colData(spe)),value=TRUE)
+
+clinical <- readxl::read_xlsx(here("Clinical data_AEM.xlsx")) %>% filter(`Subtype (dc/lc)` !=
+                                                                           "healthy")
+clinical$Donor <- dplyr::recode(
+  clinical$`Label in metabolic panel`,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+names(clinical) <- sanitize_filename_fx(names(clinical))
+
+clusters_var <- grep("^stromal", unique(spe$pheno_clusters_new2), value = TRUE)
+
+clinical_values_boxplot <- c(
+  "Skin_progression_at_biopsy",
+  "Early_or_not",
+  "current_DU",
+  "ILD"
+)
+
+# for (i in clinical_values_boxplot) {
+#   clinical[i] <- as.factor(pull(clinical, i))
+# }
+
+for (i in clinical_values_boxplot) {
+  # clinical[i] <- factor(pull(clinical, i), levels =
+  #                         unique(pull(clinical, i)))
+    clinical[i] <- as.factor(pull(clinical, i))
+}
+
+#options(future.seed=TRUE)
+
+plot_list_stromal <- setNames(future_lapply(clinical_values_boxplot, function(clinical_var_name) {
+  # Assign names to the inner list based on var_analysis
+  setNames(lapply(clusters_var, function(cluster_var) {
+    plot_categorical_clinical_data_fx(
+      spe = spe,
+      subset_vars = list(
+        "new_celllabels" = c("Stromal"),
+        "Disease" = c("SSc")
+      ),
+      var_analysis = "pheno_clusters_new2",
+      value_analysis =  cluster_var,
+      disease_var = "Disease",
+      donor_var = "Donor",
+      clinical_data = clinical,
+      clinical_var = clinical_var_name
+    )
+  }), clusters_var  # Inner list names
+  )
+}),
+  clinical_values_boxplot  # Outer list names
+)
+```
+
+```{r boxplots nbh, cache=FALSE}
+
+plot_list_nbh <- setNames(future_lapply(clinical_values_boxplot, function(clinical_var_name) {
+  # Assign names to the inner list based on var_analysis
+  setNames(lapply(unique(spe$CN_10_aggNbh_delaunay_80_new), function(cluster_var) {
+    plot_categorical_clinical_data_fx(
+      spe = spe,
+      subset_vars = list(
+        "Disease" = c("SSc")
+      ),
+      var_analysis = "CN_10_aggNbh_delaunay_80_new",
+      value_analysis =  cluster_var,
+      disease_var = "Disease",
+      donor_var = "Donor",
+      clinical_data = clinical,
+      clinical_var = clinical_var_name
+    )
+  }), clusters_var  # Inner list names
+  )
+}),
+  clinical_values_boxplot  # Outer list names
+)
+
+```
+
+```{r boxplots str has neigh, cache=FALSE, eval=TRUE}
+
+coldata_df_hasNeigh <- coldata_df_hasNeigh %>% select(!starts_with("has_CD45_CD3"))
+
+for (neigh_var in names(coldata_df_hasNeigh)) {
+  has_x_neigh <- sub("^has_", "with_", neigh_var)
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]] <- NA
+  
+  # For those fibroblasts that have the specific neighbour:
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]][spe[[neigh_var]] == has_x_neigh] <- paste0(spe[["pheno_clusters_new2"]][spe[[neigh_var]] == has_x_neigh], "_", has_x_neigh)
+  
+  # For those that do not have this neighbour, optionally mark them differently:
+  # spe[["celltype_has_neigh"]][spe[[neigh_var]] != has_x_neigh] <- paste0(spe[["lv3.anno_bank"]][spe[[neigh_var]] != has_x_neigh], "_no_", has_x_neigh)
+}
+
+names_coldata_df_celltype_hasNeigh <- grep("^pheno_clusters_new2_has", colnames(colData(spe)),value=TRUE)
+
+clinical <- readxl::read_xlsx(here("Clinical data_AEM.xlsx")) %>% filter(`Subtype (dc/lc)` !=
+                                                                           "healthy")
+clinical$Donor <- dplyr::recode(
+  clinical$`Label in metabolic panel`,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+names(clinical) <- sanitize_filename_fx(names(clinical))
+
+clusters_var <- c("stromal_1",
+                  "stromal_2",
+                  "stromal_4",
+                  "stromal_5",
+                  "stromal_8")
+
+clinical_values_boxplot <- c(
+  "Skin_progression_at_biopsy"
+)
+
+# for (i in clinical_values_boxplot) {
+#   clinical[i] <- as.factor(pull(clinical, i))
+# }
+
+for (i in clinical_values_boxplot) {
+  # clinical[i] <- factor(pull(clinical, i), levels =
+  #                         unique(pull(clinical, i)))
+    clinical[i] <- as.factor(pull(clinical, i))
+}
+
+celltype_neigh_plot <- c("has_stromal_1_neigh",
+                         "has_stromal_2_neigh",
+                         "has_CD31_1_neigh",
+                         "has_stromal_5_neigh")
+
+plot_list_stromal_hasneigh <- setNames(lapply(clinical_values_boxplot, function(clinical_var_name) {
+  # Outer list: clinical_var_name
+  setNames(lapply(clusters_var, function(cluster_var) {
+    # Middle list: cluster_var
+    setNames(lapply(celltype_neigh_plot, function(neigh_var) {
+      # Inner list: neigh_var
+      
+      # Create the subset_vars list
+      subset_vars <- list("new_celllabels" = c("Stromal"),
+                          "Disease" = c("SSc"))
+      
+      match_index <- match(colnames(spe[, spe[["pheno_clusters_new2"]] == cluster_var]), colnames(spe))
+      spe[["celltype_hasNeigh"]] <- rep(NA, ncol(spe))
+      spe[["celltype_hasNeigh"]][match_index] <- spe[, spe[["pheno_clusters_new2"]] ==
+                                                       cluster_var][[neigh_var]]
+      
+      plot <- tryCatch({
+        plot_categorical_clinical_data_fx(
+          spe = spe,
+          subset_vars = subset_vars,
+          var_analysis = "celltype_hasNeigh",
+          # Remains constant
+          value_analysis = grep("^with",na.omit(unique(spe[["celltype_hasNeigh"]])),value=TRUE),
+          # Remains as cluster_var
+          disease_var = "Disease",
+          donor_var = "Donor",
+          clinical_data = clinical,
+          clinical_var = clinical_var_name
+        )
+      }, error = function(e) {
+        message(
+          paste(
+            "Skipping plot for:",
+            clinical_var_name,
+            cluster_var,
+            neigh_var,
+            "-",
+            e$message
+          )
+        )
+        return(NULL)  # Return NULL to indicate no plot generated
+      })
+      
+      return(plot)
+      
+    }), celltype_neigh_plot  # Assign names to the inner list based on has_neigh
+    )
+  }), clusters_var  # Assign names to the middle list based on clusters_var
+  )
+}
+# future.globals = list(
+#   spe = spe,
+#   clinical = clinical,
+#   clusters_var = clusters_var,
+#   coldata_df_hasNeigh = coldata_df_hasNeigh,
+#   get_common_boxplot_components_fx = get_common_boxplot_components_fx,
+#   plot_categorical_clinical_data_fx = plot_categorical_clinical_data_fx
+# )
+),
+clinical_values_boxplot  # Assign names to the outer list based on clinical_values_plot
+)
+
+```
+
+```{r boxplots str has neigh healthy ssc, cache=FALSE, eval=FALSE}
+
+clinical <- readxl::read_xlsx(here("Clinical data_AEM.xlsx")) %>% mutate(Disease=ifelse(`Subtype (dc/lc)`=="healthy","Healthy","SSc"))
+
+clinical$Donor <- dplyr::recode(
+  clinical$`Label in metabolic panel`,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+plot_list_stromal_hasneigh_h_ssc <- setNames(future_lapply("Disease", function(clinical_var_name) {
+  # Outer list: clinical_var_name
+  setNames(lapply(clusters_var, function(cluster_var) {
+    # Middle list: cluster_var
+    setNames(lapply(names(coldata_df_hasNeigh), function(neigh_var) {
+      # Inner list: neigh_var
+      
+      # Create the subset_vars list
+      subset_vars <- list("new_celllabels" = c("Stromal"))
+      
+      match_index <- match(colnames(spe[, spe[["pheno_clusters_new2"]] == cluster_var]), colnames(spe))
+      spe[["celltype_hasNeigh"]] <- rep(NA, ncol(spe))
+      spe[["celltype_hasNeigh"]][match_index] <- spe[, spe[["pheno_clusters_new2"]] ==
+                                                       cluster_var][[neigh_var]]
+      
+      plot <- tryCatch({
+        plot_categorical_clinical_data_fx(
+          spe = spe,
+          subset_vars = subset_vars,
+          var_analysis = "celltype_hasNeigh",
+          # Remains constant
+          value_analysis = na.omit(unique(spe[["celltype_hasNeigh"]]))[1],
+          # Remains as cluster_var
+          disease_var = "Disease",
+          donor_var = "Donor",
+          clinical_data = clinical,
+          clinical_var = clinical_var_name
+        )
+      }, error = function(e) {
+        message(
+          paste(
+            "Skipping plot for:",
+            clinical_var_name,
+            cluster_var,
+            neigh_var,
+            "-",
+            e$message
+          )
+        )
+        return(NULL)  # Return NULL to indicate no plot generated
+      })
+      
+      return(plot)
+      
+    }), names(coldata_df_hasNeigh)  # Assign names to the inner list based on has_neigh
+    )
+  }), clusters_var  # Assign names to the middle list based on clusters_var
+  )
+},
+future.globals = list(
+  spe = spe,
+  clinical = clinical,
+  clusters_var = clusters_var,
+  coldata_df_hasNeigh = coldata_df_hasNeigh,
+  get_common_boxplot_components_fx = get_common_boxplot_components_fx,
+  plot_categorical_clinical_data_fx = plot_categorical_clinical_data_fx
+)
+),
+"Disease"  # Assign names to the outer list based on clinical_values_plot
+)
+
+```
+
+# Plot boxplots frequency stromal cells {.tabset .tabset-pills}
+
+```{r plot boxplot freq str, results='asis'}
+
+for (i in names(plot_list_stromal)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_stromal[[i]])) {
+    cat("### ", j, "\n\n")
+    print(plot_list_stromal[[i]][[j]])
+    cat("\n\n")
+  }
+}
+
+```
+
+
+```{r plot boxplot freq nbh, results='asis'}
+
+for (i in names(plot_list_nbh)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_nbh[[i]])) {
+    cat("### ", j, "\n\n")
+    print(plot_list_nbh[[i]][[j]])
+    cat("\n\n")
+  }
+}
+
+```
+
+# Plot boxplots frequency stromal cells with neighbours {.tabset .tabset-pills}
+
+```{r plot boxplot freq str has neigh, results='asis', eval=TRUE, fig.width=7, fig.height=5}
+
+for (i in names(plot_list_stromal_hasneigh)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_stromal_hasneigh[[i]])) {
+    cat("### ", j, "{.tabset .tabset-pills}\n\n")
+    for (k in names(plot_list_stromal_hasneigh[[i]][[j]])) {
+      cat("#### ", k, "\n\n")
+      print(plot_list_stromal_hasneigh[[i]][[j]][[k]])
+      cat("\n\n")
+    }
+  }
+}
+
+```
+
+# Plot boxplots frequency stromal cells with neighbours healthy SSc {.tabset .tabset-pills}
+
+```{r plot boxplot freq str has neigh h ssc, results='asis', eval=FALSE}
+
+for (i in names(plot_list_stromal_hasneigh_h_ssc)) {
+  cat("## ", i, "{.tabset .tabset-pills}\n\n")
+  for (j in names(plot_list_stromal_hasneigh_h_ssc[[i]])) {
+    cat("### ", j, "{.tabset .tabset-pills}\n\n")
+    for (k in names(plot_list_stromal_hasneigh_h_ssc[[i]][[j]])) {
+      cat("#### ", k, "\n\n")
+      print(plot_list_stromal_hasneigh_h_ssc[[i]][[j]][[k]])
+      cat("\n\n")
+    }
+  }
+}
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Heatmaps, scatter plots and box plots of the relationship of cell/neighbourhood frequencies with clinical data. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

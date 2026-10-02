@@ -1,0 +1,411 @@
+---
+title: "Ridge plot for distance to "
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r timestamp}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# Load spe
+
+```{r load spe}
+load(here("spe_list.RData"))
+spe <- spe_list$spe
+
+rm(spe_list)
+
+color_vectors <- list()
+color_vectors$clusters <- setNames(c("#C4281C","#C2DAB8","#E8BAC8","#80BBDB","#C470A0","#0D69AC",
+                                     "#F5CD30","#287F47","#A05F35","#D9856C","#6B327C","#008F9C","#C7D23C","#B7D7D5","#923978",
+                                     "#27462D","#FF9494","#938767","#FFF67B","#E1A4C2","#FC7B1B","#CD6298","#102ADC"), 
+                               as.character(unique(spe$pheno_clusters_new)))
+metadata(spe)$color_vectors <- color_vectors
+
+spe$pheno_clusters_new2 <- case_when(
+  grepl("CD45_CD3",spe$pheno_clusters_new) ~ "CD45",
+  TRUE ~ spe$pheno_clusters_new
+)
+
+unique(spe$pheno_clusters_new2)
+spe$disease <- case_when(spe$indication=="NH" ~ "Healthy", 
+                         spe$indication=="SSc" ~ "SSc")
+```
+
+# Calculate minimum distance to endothelium (and others)
+
+```{r mindist, echo=TRUE, cache=TRUE}
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels=="CD31+"), 
+                      img_id = "sample_id",
+                      name="distToEndothCells")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels %in% c("CD45+CD68+","CD45+CD68-CD3-","CD45+CD3+","CD45+CD68+CD3+")), 
+                      img_id = "sample_id",
+                      name="distToLeukocytes")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels == "Stromal"), 
+                      img_id = "sample_id",
+                      name="distToStromal")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$new_celllabels == "E-cad+"), 
+                      img_id = "sample_id",
+                      name="distToEpid")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new=="stromal_2"), 
+                      img_id = "sample_id",
+                      name="distToStromal2")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new %in% c("CD31_3")), 
+                      img_id = "sample_id",
+                      name="distToCD31_3")
+
+spe <- minDistToCells(spe, 
+                      x_cells = (spe$pheno_clusters_new == "CD45_CD68_1"), 
+                      img_id = "sample_id",
+                      name="distToCD68_1")
+
+spe$pheno_clusters_new2_fib2vsrestfib <- case_when(
+  grepl("^stromal", spe$pheno_clusters_new2) ~ "stromal_others",
+  TRUE ~ spe$pheno_clusters_new2
+)
+spe$pheno_clusters_new2_fib2vsrestfib <- case_when(
+  grepl("stromal_2", spe$pheno_clusters_new2) ~ "stromal_2",
+  TRUE ~ spe$pheno_clusters_new2_fib2vsrestfib
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_fib2vsrestfib ==
+               "stromal_others"),
+  img_id = "sample_id",
+  name = "distToStromalothers"
+)
+
+spe$pheno_clusters_new2_cd31_3vsrestEC <- case_when(
+  grepl("^CD31", spe$pheno_clusters_new2) ~ "EC_others",
+  TRUE ~ spe$pheno_clusters_new2
+)
+spe$pheno_clusters_new2_cd31_3vsrestEC <- case_when(
+  grepl("CD31_3", spe$pheno_clusters_new2) ~ "CD31_3",
+  TRUE ~ spe$pheno_clusters_new2_cd31_3vsrestEC
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_cd31_3vsrestEC ==
+               "EC_others"),
+  img_id = "sample_id",
+  name = "distToECothers"
+)
+
+spe$pheno_clusters_new2_CD68_1vsrestMf <- case_when(
+  grepl("^stromal", spe$pheno_clusters_new2) ~ "Mf_others",
+  TRUE ~ spe$pheno_clusters_new2
+)
+spe$pheno_clusters_new2_CD68_1vsrestMf <- case_when(
+  grepl("CD45_CD68_1", spe$pheno_clusters_new2) ~ "CD45_CD68_1",
+  TRUE ~ spe$pheno_clusters_new2_CD68_1vsrestMf
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_CD68_1vsrestMf ==
+               "Mf_others"),
+  img_id = "sample_id",
+  name = "distToMfothers"
+)
+
+spe$pheno_clusters_new2_fib2vsrest <- case_when(
+  !spe$pheno_clusters_new2%in%c("stromal_2","Ecad") ~ "otherdermalcells",
+  TRUE ~ spe$pheno_clusters_new2
+)
+
+spe$pheno_clusters_new2_cd31_3vsrest <- case_when(
+  !spe$pheno_clusters_new2%in%c("CD31_3","Ecad") ~ "otherdermalcells",
+  TRUE ~ spe$pheno_clusters_new2
+)
+
+spe$pheno_clusters_new2_cd68_1vsrest <- case_when(
+  !spe$pheno_clusters_new2%in%c("CD45_CD68_1","Ecad") ~ "otherdermalcells",
+  TRUE ~ spe$pheno_clusters_new2
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_fib2vsrest ==
+               "otherdermalcells"),
+  img_id = "sample_id",
+  name = "distToOthercells_not_str2"
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_cd31_3vsrest ==
+               "otherdermalcells"),
+  img_id = "sample_id",
+  name = "distToOthercells_not_CD31_3"
+)
+
+spe <- minDistToCells(
+  spe,
+  x_cells = (spe$pheno_clusters_new2_cd68_1vsrest ==
+               "otherdermalcells"),
+  img_id = "sample_id",
+  name = "distToOthercells_not_CD68_1"
+)
+
+```
+
+
+# Density plots - EXAMPLE, ADJUST TO SELECT CELL TYPE AND DISTANCE TO CELL TYPE
+
+```{r density plots, echo=TRUE, fig.width=15, fig.height=7}
+library(ggsci)
+library(ggtext)
+library(grid)
+
+spe$Progressive_SSc <- recode(spe$Skin.progression.at.biopsy,
+                              "stable" = "Stable SSc",
+                              "progressive" = "Progressive SSc",
+                              "Healthy" = "Healthy")
+
+spe$pheno_clusters_new3 <- recode(
+  spe$pheno_clusters_new2,
+  "CD31_1" = "Met<sup>low</sup>_EC",
+  "CD31_2" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_EC",
+  "CD31_3" = "Met<sup>hi</sup>_EC",
+  "CD31_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "CD31_5" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "CD45_CD68_1" = "Met<sup>hi</sup>_Mf",
+  "CD45_CD68_2" = "Met<sup>low</sup>_Mf",
+  "CD45_CD68_3" = "Glycolysis<sup>low</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "CD45_CD68_4" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "stromal_1" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_2" = "Met<sup>hi</sup>_Fib",
+  "stromal_3" = "TCA/OXPHOS<sup>int</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "stromal_5" = "Met<sup>low</sup>_Fib",
+  "stromal_6" = "Glycolysis<sup>int</sup><br>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "stromal_7" = "Glut<sup>hi</sup>_Fib",
+  "stromal_8" = "Glycolysis<sup>int</sup><br>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+ggplot(
+  as.data.frame(colData(spe)) %>%
+    filter(pheno_clusters_new %in% grep("^CD31", # ADJUST TO SELECT CELL TYPE
+                                        unique(spe$pheno_clusters_new2), 
+                                        value = TRUE)) %>%
+    pivot_longer(
+      cols = starts_with("DistToStromal2"), # ADJUST TO SELECT DISTANCE TO CELL TYPE
+      names_to = "DistanceType",
+      values_to = "Distance"
+    )
+) +
+  geom_density(
+    aes(Distance, ..density.., color = disease, fill = disease),
+    alpha = 0.05,
+    size = 1,
+    bounds = c(0, 2000)
+  ) +
+  xlab("Distance (µm)") +
+  ylab("Density") +
+  scale_x_continuous(breaks = seq(0, 160, 40)) +
+  scale_color_manual(values = rev(pal_npg("nrc")(2))) +
+  scale_fill_manual(values = rev(pal_npg("nrc")(2))) +
+  # scale_color_npg() + scale_fill_npg() +
+  coord_cartesian(expand = FALSE,
+                  xlim = c(0, 120),
+                  ylim = c(0, 0.04)) +
+  facet_wrap(~ pheno_clusters_new3, 
+             ncol = 4,
+             labeller = label_wrap_gen(width = 40)) +  # Wrap labels to multiple lines
+  geom_vline(xintercept = 40,
+             linetype = "solid",
+             size = 1) +
+  theme_bw() + ggtitle("Distance profile of FibMET subsets to Met<sup>hi</sup>_Mf") +
+  theme(
+    strip.text = element_markdown(
+      size = 16,
+      face = "bold",
+      lineheight = 0.8
+    ),
+    # Use element_markdown
+    plot.title = element_markdown(size = 16, face = "bold.italic"),
+    legend.key.size = grid::unit(0.8, "cm"),
+    legend.title.align = 0.5,
+    panel.spacing = grid::unit(0.5, "cm"),
+    plot.margin = margin(10, 10, 10, 10),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 16),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  )
+
+```
+
+
+# Heatmap distances - EXAMPLE, ADJUST TO SELECT CELL TYPE AND DISTANCE TO CELL TYPE
+
+```{r heatmap, echo=TRUE, fig.width=3, fig.height=4}
+
+distance_df <-  as.data.frame(colData(spe)) %>% select(pheno_clusters_new2, starts_with("DistTo"), disease)
+for (i in grep("^distTo", colnames(distance_df), value = TRUE)) {
+  # Dynamically create new column names
+  new_col <- paste0("within_", gsub("^distTo", "", i), "_innerniche")
+  
+  # Add the new column using mutate and dynamic column name
+  distance_df <- distance_df %>%
+    mutate(!!sym(new_col) := ifelse(.data[[i]] < 40, "Within Niche", "Distant"))
+}
+
+distance_df_sub <- distance_df %>% filter(
+  pheno_clusters_new2 %in% grep("^str", unique(pheno_clusters_new2), value = TRUE), # ADJUST TO SELECT CELL TYPE
+  disease == "SSc" # ADJUST TO SELECT DISEASE GROUP
+)
+selected_niche <- "within_CD68_1_innerniche" # ADJUST TO SELECT WHAT CELL TYPE IS PRESENT IN THE NICHE
+distance_df_sub[[selected_niche]] <- factor(distance_df_sub[[selected_niche]], levels = c("Distant", "Within Niche"))
+distance_df_sub_closeby_cells <- distance_df_sub #%>% filter(!!sym(selected_niche) %in% c("inner", "outer"))
+
+# prop_table <- prop.table(
+#   table(
+#     distance_df_sub_closeby_cells$pheno_clusters_new2,
+#     distance_df_sub_closeby_cells[[selected_niche]]
+#   ),
+#   1
+# )
+
+#### Create a prop table and filter the rows with at least n cells ####
+
+# Step 1: Create the contingency table
+contingency_table <- table(
+  distance_df_sub_closeby_cells$pheno_clusters_new2,
+  distance_df_sub_closeby_cells[[selected_niche]]
+)
+
+# Step 2: Initialize the proportion table with NA
+prop_table <- matrix(
+  NA,
+  nrow = nrow(contingency_table),
+  ncol = ncol(contingency_table),
+  dimnames = dimnames(contingency_table)
+)
+
+# Step 3: Identify rows with at least 25 cells
+valid_rows <- rowSums(contingency_table) >= 25
+
+# Step 4: Calculate proportions for valid rows
+prop_table[valid_rows, ] <- prop.table(contingency_table[valid_rows, ], 1)
+
+#### Create the heatmap ####
+
+# Define the breaks for the color scale
+scale_max <- 1
+breaks <- seq(0,scale_max, length.out = 100)  # Three breaks for three colors)
+#breaks <- seq(0.1, scale_max, length.out = 100)  # Three breaks for three colors
+
+# Define the corresponding colors
+#colors <- colorRampPalette(c("blue", "lightyellow", "red"))(length(breaks))
+colors <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100)
+
+# Create the color mapping function
+color_function <- colorRamp2(breaks, colors)
+
+heatmap_fib <- Heatmap(prop_table, 
+                       name = "matrix", 
+                       col = color_function,
+                       na_col = "lightgrey",
+                       cluster_rows = FALSE, 
+                       cluster_columns = FALSE, 
+                       rect_gp = gpar(col = "grey", lwd = 0,1),
+                       #row_title = "BANKSY clustering", 
+                       #column_title = "non-spatial clustering",
+                       row_title_gp = gpar(fontsize = 10, fontface = "bold"),
+                       column_title_gp = gpar(fontsize = 10, fontface = "bold")) 
+draw(heatmap_fib, heatmap_legend_side = "right")
+
+
+# # Convert the proportion table to a data frame
+# prop_df <- as.data.frame(prop_table)
+# 
+# # Rename columns to something more intuitive
+# prop_df_long <- prop_df %>% 
+#   rename(
+#     cluster = Var1,
+#     DistanceCategory = Var2,
+#     Proportion = Freq
+#   )
+# 
+# ggplot(prop_df_long, aes(x = cluster, y = Proportion, fill = DistanceCategory)) +
+#   geom_col(position = "stack") +
+#   theme_bw() +
+#   labs(x = "Cluster", y = "Proportion", fill = "Category") +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+``` 
+
+# Score distance - TEST, IGNORE
+```{r scoredistance, echo=TRUE, fig.width=2, fig.height=2, eval=FALSE}
+
+distance_df <-  as.data.frame(colData(spe)) %>% select(pheno_clusters_new2, starts_with("DistTo"),disease)
+
+distance_df$distance_stromal_score <- distance_df$distToOthercells_not_CD31_3/distance_df$distToCD31_3
+
+distance_df_sub <- distance_df %>% filter(pheno_clusters_new2 %in% grep("^str", unique(pheno_clusters_new2), value = TRUE))
+
+ggplot(distance_df_sub, aes(x = pheno_clusters_new2, y = distance_stromal_score)) +
+  geom_boxplot(outlier.shape = NA, fill = "lightgrey", color = "black") +
+  geom_jitter(aes(color = disease), width = 0.2, alpha = 0.6) +
+  scale_color_manual(values = rev(pal_npg("nrc")(2)))+
+  theme_bw() +
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size=14)) +  
+  ggtitle("Distance Score to Stromal 2") #+
+  #ylim(c(0, 10))
+
+```
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Density plots of distance of a specific cell type to other cell types, and heatmaps that illustrate the proportion of a particular cell type within a niche of another cell type. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

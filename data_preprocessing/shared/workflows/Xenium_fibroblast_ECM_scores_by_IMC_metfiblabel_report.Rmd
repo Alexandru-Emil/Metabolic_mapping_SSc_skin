@@ -1,0 +1,817 @@
+---
+title: "Xenium fibroblast ECM scores by IMC metfiblabel"
+author: "Codex"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  dev = "png",
+  dpi = 300,
+  fig.retina = 2,
+  dev.args = list(bg = "white")
+)
+```
+
+```{r libraries}
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(Matrix)
+library(decoupleR)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(knitr)
+```
+
+```{r configuration}
+sfe_path <- project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds")
+spe_path <- project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData")
+matrisome_path <- project_path("Revision/Nan annotation/Data/Hs_Matrisome_Masterlist_Naba.csv")
+output_dir <- file.path(getwd(), "xenium_fib_ecm_by_metfiblabel_outputs")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+lv3_preferred_order <- c(
+  "papillary_Fib",
+  "PI16_Fib",
+  "CXCL12_Fib",
+  "COL8A1_Fib",
+  "CCL19_Fib",
+  "COMP_Fib",
+  "COCH_Fib",
+  "NGFR_Fib"
+)
+
+metfib_levels <- c("Other_Fib", "Met_hi_Fib")
+metfib_colors <- c("Other_Fib" = "#4C78A8", "Met_hi_Fib" = "#E45756")
+
+score_levels <- c(
+  "CoreMatrisome score",
+  "Collagens score",
+  "ECM Glycoproteins score",
+  "Proteoglycans score"
+)
+
+score_labels <- c(
+  "CoreMatrisome score" = "Core\nmatrisome",
+  "Collagens score" = "Collagens",
+  "ECM Glycoproteins score" = "ECM\nglycoproteins",
+  "Proteoglycans score" = "Proteoglycans"
+)
+
+to_dgC <- function(x) {
+  if (inherits(x, "dgCMatrix")) return(x)
+  x <- as(x, "CsparseMatrix")
+  as(x, "dgCMatrix")
+}
+
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || rng[1] == rng[2]) {
+    return(rep(0.5, length(x)))
+  }
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+
+format_p <- function(p_value) {
+  dplyr::case_when(
+    is.na(p_value) ~ "p = NA",
+    p_value < 0.001 ~ "p < 0.001",
+    TRUE ~ paste0("p = ", formatC(p_value, format = "f", digits = 3))
+  )
+}
+
+save_plot_set <- function(plot, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  ggplot2::ggsave(png_file, plot, width = width, height = height, dpi = 300, bg = "white")
+
+  grDevices::pdf(pdf_file, width = width, height = height, useDingbats = FALSE, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+```
+
+# Data And ECM Score Setup
+
+```{r prepare_fib_data}
+if (!exists("spe")) {
+  load(spe_path)
+}
+
+if (!exists("sfe")) {
+  sfe <- readRDS(sfe_path)
+}
+
+if (!"Rphenograph_500" %in% colnames(SummarizedExperiment::colData(spe))) {
+  stop("The IMC spe object must contain Rphenograph_500 for metfiblabel.")
+}
+
+if (!"KEY" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain KEY to transfer IMC metfiblabel.")
+}
+
+spe$metfiblabel <- dplyr::case_when(
+  as.character(spe$Rphenograph_500) %in% c("1", "2") ~ "Met_hi_Fib",
+  as.character(spe$Rphenograph_500) == "3" ~ "Other_Fib",
+  TRUE ~ NA_character_
+)
+
+fib_map <- data.frame(
+  KEY = colnames(spe),
+  metfiblabel = as.character(spe$metfiblabel),
+  stringsAsFactors = FALSE
+)
+
+fib_idx <- match(SummarizedExperiment::colData(sfe)$KEY, fib_map$KEY)
+sfe$metfiblabel <- fib_map$metfiblabel[fib_idx]
+
+if (!"lv3_anno" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  if ("lv2_anno_new" %in% colnames(SummarizedExperiment::colData(sfe))) {
+    sfe$lv3_anno <- sfe$lv2_anno_new
+  } else {
+    stop("The Xenium sfe object must contain lv3_anno or lv2_anno_new.")
+  }
+}
+
+sfe_coldata <- as.data.frame(SummarizedExperiment::colData(sfe))
+sample_col <- dplyr::case_when(
+  "sample_id" %in% colnames(sfe_coldata) ~ "sample_id",
+  "SampleId" %in% colnames(sfe_coldata) ~ "SampleId",
+  "SampleID" %in% colnames(sfe_coldata) ~ "SampleID",
+  TRUE ~ NA_character_
+)
+
+keep_fib <- !is.na(sfe_coldata[["lv3_anno"]]) &
+  sfe_coldata[["lv3_anno"]] %in% lv3_preferred_order &
+  !is.na(sfe_coldata[["metfiblabel"]]) &
+  sfe_coldata[["metfiblabel"]] %in% metfib_levels
+
+sfe_fib <- sfe[, keep_fib]
+
+lv3_levels <- c(
+  intersect(lv3_preferred_order, unique(as.character(sfe_fib$lv3_anno))),
+  setdiff(sort(unique(as.character(sfe_fib$lv3_anno))), lv3_preferred_order)
+)
+
+sfe_fib$lv3_anno <- factor(as.character(sfe_fib$lv3_anno), levels = lv3_levels)
+sfe_fib$metfiblabel <- factor(as.character(sfe_fib$metfiblabel), levels = metfib_levels)
+sfe_fib$lv3_by_met <- paste(sfe_fib$lv3_anno, sfe_fib$metfiblabel, sep = "_")
+
+lv3_by_met_levels <- as.vector(t(outer(lv3_levels, metfib_levels, paste, sep = "_")))
+lv3_by_met_levels <- intersect(lv3_by_met_levels, unique(as.character(sfe_fib$lv3_by_met)))
+sfe_fib$lv3_by_met <- factor(as.character(sfe_fib$lv3_by_met), levels = lv3_by_met_levels)
+
+fib_counts <- as.data.frame(table(
+  lv3_anno = as.character(sfe_fib$lv3_anno),
+  metfiblabel = as.character(sfe_fib$metfiblabel)
+)) %>%
+  dplyr::filter(Freq > 0) %>%
+  dplyr::mutate(
+    lv3_anno = factor(lv3_anno, levels = lv3_levels),
+    metfiblabel = factor(metfiblabel, levels = metfib_levels)
+  ) %>%
+  dplyr::arrange(lv3_anno, metfiblabel)
+
+write.csv(fib_counts, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_counts.csv"), row.names = FALSE)
+
+kable(fib_counts)
+```
+
+```{r matrisome_network}
+matrisome <- read.csv(matrisome_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+ecm_core <- matrisome %>%
+  dplyr::filter(`Matrisome Division` == "Core matrisome") %>%
+  dplyr::transmute(
+    source = `Matrisome Category`,
+    target = `Gene Symbol`
+  )
+
+ecm_network <- dplyr::bind_rows(
+  ecm_core,
+  ecm_core %>% dplyr::transmute(source = "CoreMatrisome", target = target)
+) %>%
+  dplyr::distinct(source, target)
+
+gene_universe <- rownames(sfe_fib)
+
+gene_availability <- ecm_network %>%
+  dplyr::group_by(source) %>%
+  dplyr::summarise(
+    n_genes = dplyr::n_distinct(target),
+    n_detected = sum(unique(target) %in% gene_universe),
+    detected_fraction = n_detected / n_genes,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(score = paste0(source, " score")) %>%
+  dplyr::filter(score %in% score_levels) %>%
+  dplyr::mutate(score = factor(score, levels = score_levels)) %>%
+  dplyr::arrange(score)
+
+write.csv(gene_availability, file.path(output_dir, "xenium_fib_ecm_gene_availability.csv"), row.names = FALSE)
+
+kable(gene_availability, digits = 3)
+```
+
+```{r run_ecm_aucell}
+score_cache <- file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_aucell_scores.rds")
+
+if (file.exists(score_cache)) {
+  ecm_scores <- readRDS(score_cache)
+} else {
+  expr_mat <- to_dgC(SummarizedExperiment::assay(sfe_fib, "logcounts"))
+
+  ecm_scores <- decoupleR::run_aucell(
+    mat = expr_mat,
+    network = ecm_network,
+    minsize = 0,
+    .source = source,
+    .target = target,
+    nproc = 1
+  )
+
+  saveRDS(ecm_scores, score_cache)
+}
+```
+
+```{r score_tables}
+fib_meta <- as.data.frame(SummarizedExperiment::colData(sfe_fib))
+fib_meta$cell <- colnames(sfe_fib)
+fib_meta$sample_id <- if (!is.na(sample_col) && sample_col %in% colnames(fib_meta)) {
+  as.character(fib_meta[[sample_col]])
+} else {
+  NA_character_
+}
+
+score_long <- ecm_scores %>%
+  dplyr::transmute(
+    score_name = paste0(source, " score"),
+    cell = as.character(condition),
+    score = as.numeric(score)
+  ) %>%
+  dplyr::filter(score_name %in% score_levels) %>%
+  dplyr::left_join(
+    fib_meta %>%
+      dplyr::transmute(
+        cell,
+        sample_id,
+        lv3_anno = as.character(lv3_anno),
+        metfiblabel = as.character(metfiblabel),
+        lv3_by_met = as.character(lv3_by_met)
+      ),
+    by = "cell"
+  ) %>%
+  dplyr::filter(
+    !is.na(lv3_anno),
+    !is.na(metfiblabel),
+    lv3_anno %in% lv3_levels,
+    metfiblabel %in% metfib_levels
+  ) %>%
+  dplyr::mutate(
+    score_name = factor(score_name, levels = score_levels),
+    lv3_anno = factor(lv3_anno, levels = lv3_levels),
+    metfiblabel = factor(metfiblabel, levels = metfib_levels),
+    lv3_by_met = factor(lv3_by_met, levels = lv3_by_met_levels)
+  )
+
+score_summary <- score_long %>%
+  dplyr::group_by(score_name, lv3_anno, metfiblabel, lv3_by_met) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id[!is.na(sample_id) & sample_id != ""]),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+sample_summary <- score_long %>%
+  dplyr::filter(!is.na(sample_id), sample_id != "") %>%
+  dplyr::group_by(sample_id, score_name, lv3_anno, metfiblabel, lv3_by_met) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+delta_summary <- score_summary %>%
+  dplyr::select(score_name, lv3_anno, metfiblabel, mean_score, median_score, n_cells) %>%
+  tidyr::pivot_wider(
+    names_from = metfiblabel,
+    values_from = c(mean_score, median_score, n_cells)
+  ) %>%
+  dplyr::filter(!is.na(mean_score_Met_hi_Fib), !is.na(mean_score_Other_Fib)) %>%
+  dplyr::mutate(
+    mean_delta_met_hi_vs_other = mean_score_Met_hi_Fib - mean_score_Other_Fib,
+    median_delta_met_hi_vs_other = median_score_Met_hi_Fib - median_score_Other_Fib,
+    lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels),
+    score_name = factor(as.character(score_name), levels = score_levels)
+  )
+
+within_lv3_wilcox <- dplyr::bind_rows(lapply(levels(score_long$score_name), function(cur_score) {
+  dplyr::bind_rows(lapply(lv3_levels, function(cur_lv3) {
+    cur_df <- score_long %>%
+      dplyr::filter(score_name == cur_score, lv3_anno == cur_lv3) %>%
+      dplyr::mutate(metfiblabel = factor(as.character(metfiblabel), levels = metfib_levels))
+
+    if (dplyr::n_distinct(cur_df$metfiblabel) < 2) {
+      return(data.frame())
+    }
+
+    data.frame(
+      score_name = cur_score,
+      lv3_anno = cur_lv3,
+      n_other_fib = sum(cur_df$metfiblabel == "Other_Fib"),
+      n_met_hi_fib = sum(cur_df$metfiblabel == "Met_hi_Fib"),
+      median_other_fib = median(cur_df$score[cur_df$metfiblabel == "Other_Fib"], na.rm = TRUE),
+      median_met_hi_fib = median(cur_df$score[cur_df$metfiblabel == "Met_hi_Fib"], na.rm = TRUE),
+      difference_median_met_hi_minus_other =
+        median(cur_df$score[cur_df$metfiblabel == "Met_hi_Fib"], na.rm = TRUE) -
+        median(cur_df$score[cur_df$metfiblabel == "Other_Fib"], na.rm = TRUE),
+      p_value = stats::wilcox.test(score ~ metfiblabel, data = cur_df, exact = FALSE)$p.value,
+      stringsAsFactors = FALSE
+    )
+  }))
+})) %>%
+  dplyr::group_by(score_name) %>%
+  dplyr::mutate(
+    p_adjust_bh = stats::p.adjust(p_value, method = "BH"),
+    p_label = format_p(p_adjust_bh)
+  ) %>%
+  dplyr::ungroup()
+
+write.csv(score_long, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_cell_scores.csv"), row.names = FALSE)
+write.csv(score_summary, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_summary.csv"), row.names = FALSE)
+write.csv(sample_summary, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_sample_summary.csv"), row.names = FALSE)
+write.csv(delta_summary, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_delta.csv"), row.names = FALSE)
+write.csv(within_lv3_wilcox, file.path(output_dir, "xenium_fib_ecm_by_metfiblabel_within_lv3_wilcox_tests.csv"), row.names = FALSE)
+```
+
+# Summary Tables
+
+```{r summary_table}
+kable(score_summary, digits = 4)
+```
+
+```{r delta_table}
+kable(delta_summary, digits = 4)
+```
+
+```{r single_cell_test_table}
+kable(within_lv3_wilcox, digits = 4)
+```
+
+The Wilcoxon tests are exploratory single-cell comparisons of `Met_hi_Fib`
+versus `Other_Fib` inside each Xenium fibroblast annotation and ECM score. They
+do not model sample nesting.
+
+# Mean ECM Scores
+
+```{r split_dotplots, fig.width=10.5, fig.height=5.2}
+make_split_dotplot <- function(summary_df, scale_by_score = FALSE) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = rev(score_levels)),
+      lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels),
+      metfiblabel = factor(as.character(metfiblabel), levels = metfib_levels)
+    )
+
+  if (isTRUE(scale_by_score)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(score_name) %>%
+      dplyr::mutate(
+        fill_score = rescale01(mean_score),
+        size_score = fill_score
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Score-scaled mean"
+    plot_title <- "Fibroblast ECM scores by Xenium label and IMC metfiblabel, scaled"
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        fill_score = mean_score,
+        size_score = rescale01(mean_score)
+      )
+    legend_title <- "Mean AUCell score"
+    plot_title <- "Fibroblast ECM scores by Xenium label and IMC metfiblabel"
+  }
+
+  ggplot(plot_df, aes(x = lv3_anno, y = score_name)) +
+    geom_point(
+      aes(fill = fill_score, size = size_score, color = metfiblabel),
+      shape = 21,
+      stroke = 0.85,
+      position = position_dodge(width = 0.68)
+    ) +
+    scale_y_discrete(labels = score_labels) +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = legend_title) +
+    scale_color_manual(values = metfib_colors, name = NULL) +
+    scale_size(range = c(3.8, 10.5), guide = "none") +
+    labs(title = plot_title, x = NULL, y = NULL) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 11.5, face = "bold", angle = 35, hjust = 1),
+      axis.text.y = element_text(size = 12.5, lineheight = 0.95),
+      legend.position = "right",
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10.5),
+      panel.grid.major = element_line(color = "grey88"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 15.5, hjust = 0.5, margin = margin(b = 6)),
+      plot.margin = margin(5.5, 6, 5.5, 5.5)
+    )
+}
+
+p_dot_raw <- make_split_dotplot(score_summary, scale_by_score = FALSE)
+p_dot_scaled <- make_split_dotplot(score_summary, scale_by_score = TRUE)
+
+save_plot_set(p_dot_raw, "xenium_fib_ecm_by_metfiblabel_dotplot_raw", width = 10.5, height = 5.2)
+save_plot_set(p_dot_scaled, "xenium_fib_ecm_by_metfiblabel_dotplot_score_scaled", width = 10.5, height = 5.2)
+
+p_dot_raw
+p_dot_scaled
+```
+
+# Presentation Dot Matrices {.tabset .tabset-pill}
+
+## Mean Scores - Raw
+
+```{r presentation_two_color_dot_matrix_raw, fig.width=8.8, fig.height=7.4}
+make_presentation_mean_dot_matrix <- function(summary_df, scale_by_score = FALSE) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = score_levels),
+      lv3_anno = factor(as.character(lv3_anno), levels = rev(lv3_levels)),
+      metfiblabel = factor(as.character(metfiblabel), levels = metfib_levels)
+    )
+
+  if (isTRUE(scale_by_score)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(score_name) %>%
+      dplyr::mutate(
+        fill_score = rescale01(mean_score),
+        size_score = fill_score
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Scaled mean\nwithin score"
+    plot_title <- "ECM score presentation matrix, scaled"
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        fill_score = mean_score,
+        size_score = mean_score
+      )
+    legend_title <- "Mean\nAUCell score"
+    plot_title <- "ECM score presentation matrix"
+  }
+
+  ggplot(plot_df, aes(x = metfiblabel, y = lv3_anno)) +
+    geom_point(
+      aes(fill = fill_score, size = size_score),
+      shape = 21,
+      color = "grey25",
+      stroke = 0.35
+    ) +
+    facet_wrap(~ score_name, ncol = 2, labeller = labeller(score_name = score_labels)) +
+    scale_x_discrete(labels = c("Other_Fib" = "Other", "Met_hi_Fib" = "Met_hi")) +
+    scale_fill_gradient(low = "white", high = "#B30000", name = legend_title) +
+    scale_size(range = c(5, 13), guide = "none") +
+    labs(
+      title = plot_title,
+      x = NULL,
+      y = NULL
+    ) +
+    theme_bw(base_size = 16) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(size = 14, face = "bold"),
+      axis.text.y = element_text(size = 13.5, face = "bold"),
+      strip.background = element_rect(fill = "grey95", color = "grey35"),
+      strip.text = element_text(size = 13.5, face = "bold"),
+      legend.title = element_text(size = 12.5),
+      legend.text = element_text(size = 11.5),
+      legend.position = "right",
+      plot.title = element_text(size = 17, hjust = 0.5),
+      plot.margin = margin(7, 7, 7, 7)
+    )
+}
+
+p_presentation_two_color_raw <- make_presentation_mean_dot_matrix(
+  score_summary,
+  scale_by_score = FALSE
+)
+
+save_plot_set(
+  p_presentation_two_color_raw,
+  "xenium_fib_ecm_by_metfiblabel_presentation_two_color_mean_dot_matrix",
+  width = 8.8,
+  height = 7.4
+)
+
+p_presentation_two_color_raw
+```
+
+## Mean Scores - Scaled
+
+```{r presentation_two_color_dot_matrix_scaled, fig.width=8.8, fig.height=7.4}
+p_presentation_two_color_scaled <- make_presentation_mean_dot_matrix(
+  score_summary,
+  scale_by_score = TRUE
+)
+
+save_plot_set(
+  p_presentation_two_color_scaled,
+  "xenium_fib_ecm_by_metfiblabel_presentation_two_color_mean_dot_matrix_scaled_by_score",
+  width = 8.8,
+  height = 7.4
+)
+
+p_presentation_two_color_scaled
+```
+
+## Delta Matrix - Raw
+
+```{r presentation_divergent_delta_dot_matrix_raw, fig.width=8.8, fig.height=5.8}
+make_presentation_delta_dot_matrix <- function(delta_df, scale_by_score = FALSE) {
+  plot_df <- delta_df %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = score_levels),
+      lv3_anno = factor(as.character(lv3_anno), levels = rev(lv3_levels))
+    )
+
+  if (isTRUE(scale_by_score)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(score_name) %>%
+      dplyr::mutate(
+        max_abs_delta = max(abs(mean_delta_met_hi_vs_other), na.rm = TRUE),
+        delta_fill = dplyr::if_else(
+          is.finite(max_abs_delta) & max_abs_delta > 0,
+          mean_delta_met_hi_vs_other / max_abs_delta,
+          0
+        ),
+        size_score = abs(delta_fill)
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Scaled delta\nwithin score"
+    plot_title <- "ECM score delta presentation matrix, scaled"
+    fill_limits <- c(-1, 1)
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        delta_fill = mean_delta_met_hi_vs_other,
+        size_score = abs(mean_delta_met_hi_vs_other)
+      )
+    legend_title <- "Mean delta\nMet_hi - Other"
+    plot_title <- "ECM score delta presentation matrix"
+    max_abs <- max(abs(plot_df$delta_fill), na.rm = TRUE)
+    fill_limits <- c(-max_abs, max_abs)
+  }
+
+  ggplot(plot_df, aes(x = score_name, y = lv3_anno)) +
+    geom_point(
+      aes(fill = delta_fill, size = size_score),
+      shape = 21,
+      color = "grey25",
+      stroke = 0.35
+    ) +
+    scale_x_discrete(labels = score_labels) +
+    scale_fill_gradient2(
+      low = "#3B6FB6",
+      mid = "white",
+      high = "#B30000",
+      midpoint = 0,
+      limits = fill_limits,
+      name = legend_title
+    ) +
+    scale_size(range = c(4.5, 13), guide = "none") +
+    labs(
+      title = plot_title,
+      x = NULL,
+      y = NULL
+    ) +
+    theme_bw(base_size = 16) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(size = 12.5, face = "bold", lineheight = 0.95),
+      axis.text.y = element_text(size = 13.5, face = "bold"),
+      legend.title = element_text(size = 12.5),
+      legend.text = element_text(size = 11.5),
+      legend.position = "right",
+      plot.title = element_text(size = 17, hjust = 0.5),
+      plot.margin = margin(7, 7, 7, 7)
+    )
+}
+
+p_presentation_divergent_raw <- make_presentation_delta_dot_matrix(
+  delta_summary,
+  scale_by_score = FALSE
+)
+
+save_plot_set(
+  p_presentation_divergent_raw,
+  "xenium_fib_ecm_by_metfiblabel_presentation_divergent_delta_dot_matrix",
+  width = 8.8,
+  height = 5.8
+)
+
+p_presentation_divergent_raw
+```
+
+## Delta Matrix - Scaled
+
+```{r presentation_divergent_delta_dot_matrix_scaled, fig.width=8.8, fig.height=5.8}
+p_presentation_divergent_scaled <- make_presentation_delta_dot_matrix(
+  delta_summary,
+  scale_by_score = TRUE
+)
+
+save_plot_set(
+  p_presentation_divergent_scaled,
+  "xenium_fib_ecm_by_metfiblabel_presentation_divergent_delta_dot_matrix_scaled_by_score",
+  width = 8.8,
+  height = 5.8
+)
+
+p_presentation_divergent_scaled
+```
+
+```{r delta_plots, fig.width=9.6, fig.height=5.2}
+p_delta_heatmap <- delta_summary %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = rev(score_levels)),
+    lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels)
+  ) %>%
+  ggplot(aes(x = lv3_anno, y = score_name, fill = mean_delta_met_hi_vs_other)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  scale_y_discrete(labels = score_labels) +
+  scale_fill_gradient2(
+    low = "#3B6FB6",
+    mid = "white",
+    high = "#D7301F",
+    midpoint = 0,
+    name = "Mean delta\nMet_hi - Other"
+  ) +
+  labs(title = "ECM score delta by Xenium fibroblast label", x = NULL, y = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 11.5, face = "bold", angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 12.5, lineheight = 0.95),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 15.5, hjust = 0.5)
+  )
+
+p_delta_bar <- delta_summary %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = score_levels),
+    lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels)
+  ) %>%
+  ggplot(aes(x = lv3_anno, y = mean_delta_met_hi_vs_other, fill = mean_delta_met_hi_vs_other > 0)) +
+  geom_hline(yintercept = 0, color = "grey35", linewidth = 0.4) +
+  geom_col(width = 0.72, color = "grey30", linewidth = 0.25) +
+  facet_wrap(~ score_name, ncol = 2, scales = "free_y", labeller = labeller(score_name = score_labels)) +
+  scale_fill_manual(values = c("TRUE" = "#D7301F", "FALSE" = "#3B6FB6"), guide = "none") +
+  labs(title = "Mean ECM score delta, Met_hi_Fib minus Other_Fib", x = NULL, y = "Mean AUCell delta") +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 10.5, face = "bold", angle = 35, hjust = 1),
+    strip.text = element_text(size = 12.5, face = "bold"),
+    plot.title = element_text(size = 15.5, hjust = 0.5)
+  )
+
+save_plot_set(p_delta_heatmap, "xenium_fib_ecm_by_metfiblabel_delta_heatmap", width = 9.6, height = 5.2)
+save_plot_set(p_delta_bar, "xenium_fib_ecm_by_metfiblabel_delta_bar", width = 9.6, height = 5.2)
+
+p_delta_heatmap
+p_delta_bar
+```
+
+# Cell-Level Distributions
+
+```{r distribution_plots, fig.width=12, fig.height=7.2}
+p_violin <- score_long %>%
+  dplyr::mutate(
+    score_name = factor(as.character(score_name), levels = score_levels),
+    lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels),
+    metfiblabel = factor(as.character(metfiblabel), levels = metfib_levels)
+  ) %>%
+  ggplot(aes(x = lv3_anno, y = score, fill = metfiblabel)) +
+  geom_violin(
+    position = position_dodge(width = 0.82),
+    width = 0.78,
+    alpha = 0.72,
+    color = "grey30",
+    trim = TRUE
+  ) +
+  geom_boxplot(
+    position = position_dodge(width = 0.82),
+    width = 0.14,
+    outlier.shape = NA,
+    fill = "white",
+    color = "grey15",
+    linewidth = 0.35
+  ) +
+  facet_wrap(~ score_name, ncol = 2, scales = "free_y", labeller = labeller(score_name = score_labels)) +
+  scale_fill_manual(values = metfib_colors) +
+  labs(title = "Single-cell fibroblast ECM scores split by IMC metfiblabel", x = NULL, y = "AUCell score", fill = NULL) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 10.5, face = "bold", angle = 35, hjust = 1),
+    strip.text = element_text(size = 12.5, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+
+p_density <- score_long %>%
+  dplyr::mutate(score_name = factor(as.character(score_name), levels = score_levels)) %>%
+  ggplot(aes(x = score, color = metfiblabel, fill = metfiblabel)) +
+  geom_density(alpha = 0.18, linewidth = 0.8, adjust = 1.05) +
+  facet_grid(score_name ~ lv3_anno, scales = "free", labeller = labeller(score_name = score_labels)) +
+  scale_color_manual(values = metfib_colors) +
+  scale_fill_manual(values = metfib_colors) +
+  labs(title = "ECM score density within each Xenium fibroblast label", x = "AUCell score", y = "Density", color = NULL, fill = NULL) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 9.5, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(size = 15.5, hjust = 0.5)
+  )
+
+save_plot_set(p_violin, "xenium_fib_ecm_by_metfiblabel_violin_box", width = 12, height = 7.2)
+save_plot_set(p_density, "xenium_fib_ecm_by_metfiblabel_density_grid", width = 12, height = 8.4)
+
+p_violin
+p_density
+```
+
+# Sample Means
+
+```{r sample_mean_plot, fig.width=12, fig.height=7}
+if (nrow(sample_summary) > 0) {
+  p_sample <- sample_summary %>%
+    dplyr::mutate(
+      score_name = factor(as.character(score_name), levels = score_levels),
+      lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels),
+      metfiblabel = factor(as.character(metfiblabel), levels = metfib_levels)
+    ) %>%
+    ggplot(aes(x = lv3_anno, y = mean_score, color = metfiblabel)) +
+    geom_point(
+      aes(size = n_cells),
+      alpha = 0.82,
+      position = position_jitterdodge(jitter.width = 0.08, dodge.width = 0.58)
+    ) +
+    facet_wrap(~ score_name, ncol = 2, scales = "free_y", labeller = labeller(score_name = score_labels)) +
+    scale_color_manual(values = metfib_colors) +
+    scale_size_continuous(range = c(2, 6), name = "Cells per sample") +
+    labs(title = "Sample-level fibroblast ECM score means", x = NULL, y = "Mean AUCell score", color = NULL) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 10.5, face = "bold", angle = 35, hjust = 1),
+      strip.text = element_text(size = 12.5, face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(size = 16, hjust = 0.5)
+    )
+
+  save_plot_set(p_sample, "xenium_fib_ecm_by_metfiblabel_sample_mean_dots", width = 12, height = 7)
+  p_sample
+} else {
+  cat("No sample identifier was available for the fibroblast subset.")
+}
+```
+
+# Output Files
+
+```{r output_files}
+output_files <- data.frame(
+  file = sort(list.files(output_dir, full.names = FALSE)),
+  stringsAsFactors = FALSE
+)
+kable(output_files)
+```

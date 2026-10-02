@@ -1,0 +1,2954 @@
+---
+title: "IMC heatmap sankey scMetabolism-only render"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+```
+
+# scMetabolism on Xenium fibroblast clusters {.tabset .tabset-pill}
+
+```{r scmetabolism_setup, message=FALSE, warning=FALSE}
+if (!requireNamespace("scMetabolism", quietly = TRUE)) {
+  stop(
+    "The scMetabolism package is required for this section. Install it with ",
+  )
+}
+
+library(scMetabolism)
+library(SpatialFeatureExperiment)
+library(SummarizedExperiment)
+library(Seurat)
+library(Matrix)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(RColorBrewer)
+
+if (!exists("to_dgC")) {
+  to_dgC <- function(x) {
+    if (inherits(x, "dgCMatrix")) return(x)
+    x <- as(x, "CsparseMatrix")
+    as(x, "dgCMatrix")
+  }
+}
+```
+
+```{r scmetabolism_prepare_sfe}
+if (!exists("spe")) {
+  load(project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"))
+}
+
+if (!exists("sfe")) {
+  sfe <- readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds"))
+}
+
+spe$metfiblabel <- dplyr::case_when(
+  spe$Rphenograph_500 %in% c("1", "2") ~ "Met_hi_Fib",
+  spe$Rphenograph_500 == "3" ~ "Other_Fib"
+)
+
+if (!"KEY" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain colData(sfe)$KEY to transfer metfiblabel from the IMC spe.")
+}
+
+df_map <- data.frame(
+  KEY = colnames(spe),
+  metfiblabel = spe$metfiblabel,
+  stringsAsFactors = FALSE
+)
+
+idx <- match(SummarizedExperiment::colData(sfe)$KEY, df_map$KEY)
+sfe$metfiblabel <- df_map$metfiblabel[idx]
+
+if (!"lv3_anno" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  if ("lv2_anno_new" %in% colnames(SummarizedExperiment::colData(sfe))) {
+    sfe$lv3_anno <- sfe$lv2_anno_new
+  } else {
+    stop("The Xenium sfe object must contain lv3_anno or lv2_anno_new.")
+  }
+}
+
+stromal_types <- c("Other_Fib", "Met_hi_Fib")
+keep_scmetab <- !is.na(sfe$lv3_anno) &
+  sfe$lv3_anno != "" &
+  grepl("_Fib$", sfe$lv3_anno) &
+  !is.na(sfe$metfiblabel) &
+  sfe$metfiblabel %in% stromal_types
+
+sfe_scmetab <- sfe[, keep_scmetab]
+
+lv3_preferred_order <- c(
+  "papillary_Fib",
+  "PI16_Fib",
+  "CXCL12_Fib",
+  "COL8A1_Fib",
+  "CCL19_Fib",
+  "COMP_Fib",
+  "COCH_Fib",
+  "NGFR_Fib"
+)
+
+lv3_levels <- unique(as.character(sfe_scmetab$lv3_anno))
+lv3_levels <- c(
+  intersect(lv3_preferred_order, lv3_levels),
+  setdiff(sort(lv3_levels), lv3_preferred_order)
+)
+
+sfe_scmetab$lv3_anno <- factor(as.character(sfe_scmetab$lv3_anno), levels = lv3_levels)
+sfe_scmetab$metfiblabel <- factor(as.character(sfe_scmetab$metfiblabel), levels = stromal_types)
+sfe_scmetab$lv3_by_met <- paste(sfe_scmetab$lv3_anno, sfe_scmetab$metfiblabel, sep = "_")
+
+lv3_by_met_levels <- as.vector(t(outer(lv3_levels, stromal_types, paste, sep = "_")))
+lv3_by_met_levels <- intersect(lv3_by_met_levels, unique(sfe_scmetab$lv3_by_met))
+sfe_scmetab$lv3_by_met <- factor(sfe_scmetab$lv3_by_met, levels = lv3_by_met_levels)
+
+table(sfe_scmetab$lv3_anno, sfe_scmetab$metfiblabel)
+```
+
+```{r scmetabolism_run, message=FALSE, warning=FALSE}
+counts_mat <- to_dgC(SummarizedExperiment::assay(sfe_scmetab, "counts"))
+scmetab_meta <- as.data.frame(SummarizedExperiment::colData(sfe_scmetab))
+rownames(scmetab_meta) <- colnames(sfe_scmetab)
+
+old_assay_version <- getOption("Seurat.object.assay.version")
+options(Seurat.object.assay.version = "v3")
+
+xenium_scmetab <- Seurat::CreateSeuratObject(
+  counts = counts_mat,
+  meta.data = scmetab_meta,
+  assay = "RNA",
+  project = "Xenium_scMetabolism"
+)
+
+if (is.null(old_assay_version)) {
+  options(Seurat.object.assay.version = NULL)
+} else {
+  options(Seurat.object.assay.version = old_assay_version)
+}
+
+xenium_scmetab <- Seurat::NormalizeData(xenium_scmetab, verbose = FALSE)
+xenium_scmetab$lv3_anno <- factor(as.character(xenium_scmetab$lv3_anno), levels = lv3_levels)
+xenium_scmetab$metfiblabel <- factor(as.character(xenium_scmetab$metfiblabel), levels = stromal_types)
+xenium_scmetab$lv3_by_met <- factor(as.character(xenium_scmetab$lv3_by_met), levels = lv3_by_met_levels)
+Seurat::Idents(xenium_scmetab) <- "lv3_anno"
+
+detected_cores <- parallel::detectCores(logical = FALSE)
+scmetab_ncores <- ifelse(is.na(detected_cores), 1, min(2, detected_cores))
+
+xenium_scmetab <- scMetabolism::sc.metabolism.Seurat(
+  obj = xenium_scmetab,
+  method = "AUCell",
+  imputation = FALSE,
+  ncores = scmetab_ncores,
+  metabolism.type = "KEGG"
+)
+
+scmetab_scores <- xenium_scmetab@assays$METABOLISM$score
+scmetab_pathway_variance <- sort(
+  apply(as.matrix(scmetab_scores), 1, stats::var, na.rm = TRUE),
+  decreasing = TRUE
+)
+
+scmetab_preferred_pathways <- c(
+  "Glycolysis / Gluconeogenesis",
+  "Citrate cycle (TCA cycle)",
+  "Oxidative phosphorylation",
+  "Pentose phosphate pathway",
+  "Pyruvate metabolism",
+  "Fatty acid biosynthesis",
+  "Fatty acid degradation",
+  "Glutathione metabolism",
+  "Purine metabolism",
+  "Pyrimidine metabolism"
+)
+
+scmetab_dot_pathways <- unique(c(
+  intersect(scmetab_preferred_pathways, rownames(scmetab_scores)),
+  names(head(scmetab_pathway_variance, 20))
+))
+scmetab_dot_pathways <- scmetab_dot_pathways[seq_len(min(30, length(scmetab_dot_pathways)))]
+
+scmetab_heatmap_pathways <- names(head(scmetab_pathway_variance, 30))
+```
+
+```{r scmetabolism_helpers}
+summarize_scmetabolism <- function(score_matrix, meta_data, group_var, pathways = rownames(score_matrix)) {
+  score_df <- as.data.frame(t(as.matrix(score_matrix)), check.names = FALSE)
+  score_cells <- colnames(score_matrix)
+  if (is.null(score_cells) || !all(score_cells %in% rownames(meta_data))) {
+    score_cells <- rownames(meta_data)[seq_len(ncol(score_matrix))]
+  }
+  score_df$cell <- score_cells
+  score_df$group <- as.character(meta_data[score_df$cell, group_var, drop = TRUE])
+
+  tidyr::pivot_longer(
+    score_df,
+    cols = dplyr::all_of(pathways),
+    names_to = "pathway",
+    values_to = "score"
+  ) %>%
+    dplyr::filter(!is.na(group), group != "") %>%
+    dplyr::group_by(group, pathway) %>%
+    dplyr::summarise(
+      mean_score = mean(score, na.rm = TRUE),
+      median_score = median(score, na.rm = TRUE),
+      n_cells = dplyr::n(),
+      .groups = "drop"
+    )
+}
+
+plot_scmetabolism_heatmap <- function(summary_df, group_levels, pathway_levels, plot_title) {
+  summary_df %>%
+    dplyr::filter(pathway %in% pathway_levels) %>%
+    dplyr::group_by(pathway) %>%
+    dplyr::mutate(
+      mean_score_z = if (dplyr::n_distinct(mean_score, na.rm = TRUE) > 1) {
+        as.numeric(base::scale(mean_score))
+      } else {
+        0
+      }
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(
+      group = factor(group, levels = group_levels),
+      pathway = factor(pathway, levels = rev(pathway_levels))
+    ) %>%
+    ggplot(aes(x = group, y = pathway, fill = mean_score_z)) +
+    geom_tile(color = "white", linewidth = 0.2) +
+    scale_fill_gradientn(
+      colors = rev(RColorBrewer::brewer.pal(7, "RdBu")),
+      name = "Row z-score",
+      na.value = "grey90"
+    ) +
+    labs(title = plot_title, x = NULL, y = NULL) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(hjust = 0.5)
+    )
+}
+
+make_scmetabolism_cell_df <- function(score_matrix, meta_data, pathways) {
+  score_matrix <- as.matrix(score_matrix)
+  score_cells <- colnames(score_matrix)
+  if (is.null(score_cells) || !all(score_cells %in% rownames(meta_data))) {
+    score_cells <- rownames(meta_data)[seq_len(ncol(score_matrix))]
+  }
+
+  score_df <- as.data.frame(t(score_matrix[pathways, , drop = FALSE]), check.names = FALSE)
+  score_df$cell <- score_cells
+  score_df$lv3_anno <- meta_data[score_df$cell, "lv3_anno", drop = TRUE]
+  score_df$metfiblabel <- meta_data[score_df$cell, "metfiblabel", drop = TRUE]
+  score_df$lv3_by_met <- meta_data[score_df$cell, "lv3_by_met", drop = TRUE]
+
+  score_df %>%
+    tidyr::pivot_longer(
+      cols = dplyr::all_of(pathways),
+      names_to = "pathway",
+      values_to = "score"
+    ) %>%
+    dplyr::mutate(
+      lv3_anno = factor(as.character(lv3_anno), levels = lv3_levels),
+      metfiblabel = factor(as.character(metfiblabel), levels = stromal_types),
+      lv3_by_met = factor(as.character(lv3_by_met), levels = lv3_by_met_levels),
+      pathway = factor(pathway, levels = pathways)
+    )
+}
+```
+
+## Xenium lv3_anno
+
+```{r scmetabolism_lv3_plots, fig.width=12, fig.height=8}
+p_scmetab_dot_lv3 <- scMetabolism::DotPlot.metabolism(
+  obj = xenium_scmetab,
+  pathway = scmetab_dot_pathways,
+  phenotype = "lv3_anno",
+  norm = "y"
+) +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+p_scmetab_dot_lv3
+```
+
+```{r scmetabolism_lv3_heatmap, fig.width=8, fig.height=8}
+scmetab_lv3_summary <- summarize_scmetabolism(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  group_var = "lv3_anno",
+  pathways = scmetab_heatmap_pathways
+)
+
+p_scmetab_heatmap_lv3 <- plot_scmetabolism_heatmap(
+  summary_df = scmetab_lv3_summary,
+  group_levels = lv3_levels,
+  pathway_levels = scmetab_heatmap_pathways,
+  plot_title = "scMetabolism KEGG activity across Xenium lv3_anno fibroblast clusters"
+)
+
+p_scmetab_heatmap_lv3
+```
+
+## Xenium lv3_anno split by IMC metfiblabel
+
+```{r scmetabolism_lv3_by_met_plots, fig.width=14, fig.height=8}
+p_scmetab_dot_lv3_by_met <- scMetabolism::DotPlot.metabolism(
+  obj = xenium_scmetab,
+  pathway = scmetab_dot_pathways,
+  phenotype = "lv3_by_met",
+  norm = "y"
+) +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+p_scmetab_dot_lv3_by_met
+```
+
+```{r scmetabolism_lv3_by_met_heatmap, fig.width=11, fig.height=8}
+scmetab_lv3_by_met_summary <- summarize_scmetabolism(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  group_var = "lv3_by_met",
+  pathways = scmetab_heatmap_pathways
+)
+
+p_scmetab_heatmap_lv3_by_met <- plot_scmetabolism_heatmap(
+  summary_df = scmetab_lv3_by_met_summary,
+  group_levels = lv3_by_met_levels,
+  pathway_levels = scmetab_heatmap_pathways,
+  plot_title = "scMetabolism KEGG activity across Xenium lv3_anno clusters split by IMC metfiblabel"
+)
+
+p_scmetab_heatmap_lv3_by_met
+```
+
+```{r scmetabolism_met_hi_delta_heatmap, fig.width=8, fig.height=8}
+scmetab_met_delta <- scmetab_lv3_by_met_summary %>%
+  dplyr::mutate(
+    lv3_anno = sub("_(Other_Fib|Met_hi_Fib)$", "", group),
+    metfiblabel = dplyr::case_when(
+      grepl("_Other_Fib$", group) ~ "Other_Fib",
+      grepl("_Met_hi_Fib$", group) ~ "Met_hi_Fib",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(!is.na(metfiblabel)) %>%
+  dplyr::select(lv3_anno, metfiblabel, pathway, mean_score) %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = mean_score) %>%
+  dplyr::filter(!is.na(Met_hi_Fib), !is.na(Other_Fib)) %>%
+  dplyr::mutate(delta_met_hi_vs_other = Met_hi_Fib - Other_Fib)
+
+p_scmetab_met_hi_delta <- scmetab_met_delta %>%
+  dplyr::filter(pathway %in% scmetab_heatmap_pathways) %>%
+  dplyr::mutate(
+    lv3_anno = factor(lv3_anno, levels = lv3_levels),
+    pathway = factor(pathway, levels = rev(scmetab_heatmap_pathways))
+  ) %>%
+  ggplot(aes(x = lv3_anno, y = pathway, fill = delta_met_hi_vs_other)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "white",
+    high = "#B2182B",
+    midpoint = 0,
+    name = "Met_hi - Other"
+  ) +
+  labs(
+    title = "Within-lv3 scMetabolism difference: Met_hi_Fib minus Other_Fib",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+p_scmetab_met_hi_delta
+```
+
+## Glycolysis and TCA/OXPHOS focus
+
+```{r scmetabolism_energy_pathways}
+scmetab_energy_requested <- c(
+  "Glycolysis / Gluconeogenesis",
+  "Citrate cycle (TCA cycle)",
+  "Oxidative phosphorylation"
+)
+
+scmetab_energy_pathways <- intersect(scmetab_energy_requested, rownames(scmetab_scores))
+scmetab_energy_missing <- setdiff(scmetab_energy_requested, scmetab_energy_pathways)
+
+if (length(scmetab_energy_pathways) == 0) {
+  stop("None of the requested glycolysis/TCA/OXPHOS pathways are present in scMetabolism scores.")
+}
+
+scmetab_energy_availability <- data.frame(
+  pathway = scmetab_energy_requested,
+  plotted = scmetab_energy_requested %in% scmetab_energy_pathways,
+  note = ifelse(
+    scmetab_energy_requested %in% scmetab_energy_pathways,
+    "available in scMetabolism KEGG scores",
+    "not plotted; excluded by scMetabolism because this Xenium panel has insufficient pathway gene coverage"
+  )
+)
+
+scmetab_energy_caption <- if (length(scmetab_energy_missing) > 0) {
+  paste("Not plotted:", paste(scmetab_energy_missing, collapse = ", "),
+        "was excluded by scMetabolism because this Xenium panel has insufficient pathway gene coverage.")
+} else {
+  NULL
+}
+
+scmetab_energy_scores <- make_scmetabolism_cell_df(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  pathways = scmetab_energy_pathways
+)
+
+scmetab_energy_by_met_summary <- summarize_scmetabolism(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  group_var = "lv3_by_met",
+  pathways = scmetab_energy_pathways
+)
+
+scmetab_energy_delta <- scmetab_energy_by_met_summary %>%
+  dplyr::mutate(
+    lv3_anno = sub("_(Other_Fib|Met_hi_Fib)$", "", group),
+    metfiblabel = dplyr::case_when(
+      grepl("_Other_Fib$", group) ~ "Other_Fib",
+      grepl("_Met_hi_Fib$", group) ~ "Met_hi_Fib",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(!is.na(metfiblabel)) %>%
+  dplyr::select(lv3_anno, metfiblabel, pathway, mean_score) %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = mean_score) %>%
+  dplyr::filter(!is.na(Met_hi_Fib), !is.na(Other_Fib)) %>%
+  dplyr::mutate(delta_met_hi_vs_other = Met_hi_Fib - Other_Fib)
+
+scmetab_output_dir <- file.path(getwd(), "scmetabolism_outputs")
+dir.create(scmetab_output_dir, showWarnings = FALSE, recursive = TRUE)
+
+write.csv(
+  scmetab_energy_availability,
+  file.path(scmetab_output_dir, "scmetabolism_energy_pathway_availability.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_energy_scores,
+  file.path(scmetab_output_dir, "scmetabolism_energy_cell_scores.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_energy_delta,
+  file.path(scmetab_output_dir, "scmetabolism_energy_met_hi_delta.csv"),
+  row.names = FALSE
+)
+
+scmetab_energy_availability
+```
+
+```{r scmetabolism_energy_lv3_violin, fig.width=11, fig.height=5}
+p_scmetab_energy_lv3_violin <- ggplot(
+  scmetab_energy_scores,
+  aes(x = lv3_anno, y = score)
+) +
+  geom_violin(fill = "#B8D8D8", color = "grey35", scale = "width", trim = TRUE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, fill = "white", color = "grey25") +
+  facet_wrap(~ pathway, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Focused scMetabolism scores across Xenium fibroblast lv3_anno clusters",
+    subtitle = "Glycolysis and TCA/OXPHOS focus",
+    caption = scmetab_energy_caption,
+    x = NULL,
+    y = "scMetabolism AUCell score"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_energy_lv3_violin.png"),
+  p_scmetab_energy_lv3_violin,
+  width = 11,
+  height = 5,
+  dpi = 300
+)
+
+p_scmetab_energy_lv3_violin
+```
+
+```{r scmetabolism_energy_lv3_by_met_violin, fig.width=12, fig.height=6}
+p_scmetab_energy_lv3_by_met_violin <- ggplot(
+  scmetab_energy_scores,
+  aes(x = lv3_anno, y = score, fill = metfiblabel)
+) +
+  geom_violin(
+    position = position_dodge(width = 0.8),
+    color = "grey35",
+    scale = "width",
+    trim = TRUE
+  ) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.14,
+    outlier.shape = NA,
+    color = "grey25"
+  ) +
+  scale_fill_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759")) +
+  facet_wrap(~ pathway, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Focused scMetabolism scores split by IMC metfiblabel",
+    subtitle = "Glycolysis and TCA/OXPHOS focus within Xenium lv3_anno clusters",
+    caption = scmetab_energy_caption,
+    x = NULL,
+    y = "scMetabolism AUCell score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_energy_lv3_by_met_violin.png"),
+  p_scmetab_energy_lv3_by_met_violin,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+p_scmetab_energy_lv3_by_met_violin
+```
+
+```{r scmetabolism_energy_delta_bar, fig.width=10, fig.height=5}
+p_scmetab_energy_delta_bar <- scmetab_energy_delta %>%
+  dplyr::mutate(
+    lv3_anno = factor(lv3_anno, levels = lv3_levels),
+    pathway = factor(pathway, levels = scmetab_energy_pathways)
+  ) %>%
+  ggplot(aes(x = lv3_anno, y = delta_met_hi_vs_other, fill = delta_met_hi_vs_other > 0)) +
+  geom_hline(yintercept = 0, linewidth = 0.35, color = "grey35") +
+  geom_col(width = 0.72) +
+  scale_fill_manual(values = c("TRUE" = "#B2182B", "FALSE" = "#2166AC"), guide = "none") +
+  facet_wrap(~ pathway, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Focused scMetabolism difference by Xenium cluster",
+    subtitle = "Met_hi_Fib minus Other_Fib",
+    caption = scmetab_energy_caption,
+    x = NULL,
+    y = "Mean score difference"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_energy_met_hi_delta_bar.png"),
+  p_scmetab_energy_delta_bar,
+  width = 10,
+  height = 5,
+  dpi = 300
+)
+
+p_scmetab_energy_delta_bar
+```
+
+## Glycolysis and TCA by IMC metfiblabel only
+
+```{r scmetabolism_metfiblabel_energy_data}
+scmetab_metfiblabel_pathways <- intersect(
+  c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)"),
+  rownames(scmetab_scores)
+)
+
+if (length(scmetab_metfiblabel_pathways) == 0) {
+  stop("Glycolysis and TCA pathways are not present in the scMetabolism scores.")
+}
+
+scmetab_metfiblabel_scores <- make_scmetabolism_cell_df(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  pathways = scmetab_metfiblabel_pathways
+) %>%
+  dplyr::filter(!is.na(metfiblabel)) %>%
+  dplyr::mutate(
+    metfiblabel = factor(as.character(metfiblabel), levels = stromal_types),
+    pathway = factor(as.character(pathway), levels = scmetab_metfiblabel_pathways)
+  ) %>%
+  dplyr::select(cell, metfiblabel, pathway, score)
+
+scmetab_metfiblabel_summary <- scmetab_metfiblabel_scores %>%
+  dplyr::group_by(pathway, metfiblabel) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+scmetab_metfiblabel_delta <- scmetab_metfiblabel_summary %>%
+  dplyr::select(pathway, metfiblabel, mean_score, median_score) %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = c(mean_score, median_score)) %>%
+  dplyr::mutate(
+    mean_delta_met_hi_vs_other = mean_score_Met_hi_Fib - mean_score_Other_Fib,
+    median_delta_met_hi_vs_other = median_score_Met_hi_Fib - median_score_Other_Fib
+  )
+
+scmetab_output_dir <- file.path(getwd(), "scmetabolism_outputs")
+dir.create(scmetab_output_dir, showWarnings = FALSE, recursive = TRUE)
+
+write.csv(
+  scmetab_metfiblabel_scores,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_cell_scores.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_metfiblabel_summary,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_summary.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_metfiblabel_delta,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_delta.csv"),
+  row.names = FALSE
+)
+
+scmetab_metfiblabel_summary
+```
+
+```{r scmetabolism_metfiblabel_energy_violin_jitter, fig.width=8, fig.height=5}
+p_scmetab_metfiblabel_violin_jitter <- ggplot(
+  scmetab_metfiblabel_scores,
+  aes(x = metfiblabel, y = score, fill = metfiblabel)
+) +
+  geom_violin(width = 0.82, alpha = 0.78, color = "grey30", trim = TRUE) +
+  geom_jitter(
+    aes(color = metfiblabel),
+    width = 0.08,
+    size = 0.7,
+    alpha = 0.28,
+    show.legend = FALSE
+  ) +
+  geom_boxplot(width = 0.16, outlier.shape = NA, fill = "white", color = "grey15") +
+  scale_fill_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759")) +
+  scale_color_manual(values = c("Other_Fib" = "#2F5F8F", "Met_hi_Fib" = "#B23B3F")) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  labs(
+    title = "Glycolysis and TCA scMetabolism scores by IMC metfiblabel",
+    subtitle = "Violin, boxplot, and cell-level jitter",
+    x = NULL,
+    y = "scMetabolism AUCell score",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 11, angle = 25, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_violin_jitter.png"),
+  p_scmetab_metfiblabel_violin_jitter,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_violin_jitter
+```
+
+```{r scmetabolism_metfiblabel_energy_density, fig.width=8, fig.height=4.8}
+p_scmetab_metfiblabel_density <- ggplot(
+  scmetab_metfiblabel_scores,
+  aes(x = score, fill = metfiblabel, color = metfiblabel)
+) +
+  geom_density(alpha = 0.36, linewidth = 0.8, adjust = 1.1) +
+  scale_fill_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759")) +
+  scale_color_manual(values = c("Other_Fib" = "#2F5F8F", "Met_hi_Fib" = "#B23B3F")) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free") +
+  labs(
+    title = "Glycolysis and TCA score distributions",
+    subtitle = "Density view by IMC metfiblabel",
+    x = "scMetabolism AUCell score",
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_density.png"),
+  p_scmetab_metfiblabel_density,
+  width = 8,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_density
+```
+
+```{r scmetabolism_metfiblabel_energy_dumbbell, fig.width=8, fig.height=3.8}
+scmetab_metfiblabel_dumbbell <- scmetab_metfiblabel_summary %>%
+  dplyr::select(pathway, metfiblabel, mean_score) %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = mean_score) %>%
+  dplyr::mutate(pathway = factor(pathway, levels = rev(scmetab_metfiblabel_pathways)))
+
+p_scmetab_metfiblabel_dumbbell <- ggplot(scmetab_metfiblabel_dumbbell) +
+  geom_segment(
+    aes(x = Other_Fib, xend = Met_hi_Fib, y = pathway, yend = pathway),
+    color = "grey55",
+    linewidth = 1.2
+  ) +
+  geom_point(aes(x = Other_Fib, y = pathway), color = "#4E79A7", size = 4) +
+  geom_point(aes(x = Met_hi_Fib, y = pathway), color = "#E15759", size = 4) +
+  labs(
+    title = "Mean Glycolysis and TCA scores by IMC metfiblabel",
+    subtitle = "Dumbbell view highlights direction and size of the group difference",
+    x = "Mean scMetabolism AUCell score",
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_dumbbell.png"),
+  p_scmetab_metfiblabel_dumbbell,
+  width = 8,
+  height = 3.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_dumbbell
+```
+
+```{r scmetabolism_metfiblabel_energy_mean_ci, fig.width=6.6, fig.height=3.8}
+scmetab_metfiblabel_dot_labels <- c(
+  "Glycolysis / Gluconeogenesis" = "Glycolysis /\nGluconeogenesis",
+  "Citrate cycle (TCA cycle)" = "Citrate cycle\n(TCA cycle)"
+)
+
+make_energy_dotplot <- function(
+  summary_df,
+  group_col,
+  group_levels,
+  pathway_levels,
+  pathway_labels,
+  plot_title,
+  scale_by_column = FALSE
+) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      pathway = factor(as.character(pathway), levels = pathway_levels),
+      group_label = factor(as.character(.data[[group_col]]), levels = rev(group_levels))
+    )
+
+  if (isTRUE(scale_by_column)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(pathway) %>%
+      dplyr::mutate(
+        dot_min = min(mean_score, na.rm = TRUE),
+        dot_max = max(mean_score, na.rm = TRUE),
+        dot_score = dplyr::if_else(
+          dot_max > dot_min,
+          (mean_score - dot_min) / (dot_max - dot_min),
+          0.5
+        )
+      ) %>%
+      dplyr::ungroup() %>%
+      dplyr::select(-dot_min, -dot_max)
+    legend_title <- "Column-scaled mean"
+  } else {
+    plot_df <- plot_df %>% dplyr::mutate(dot_score = mean_score)
+    legend_title <- "Mean AUCell score"
+  }
+
+  ggplot(plot_df, aes(x = pathway, y = group_label)) +
+    geom_point(
+      aes(fill = dot_score, size = dot_score),
+      shape = 21,
+      color = "grey35",
+      stroke = 0.35
+    ) +
+    scale_x_discrete(labels = pathway_labels) +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = legend_title) +
+    scale_size(range = c(8, 16), guide = "none") +
+    labs(
+      title = plot_title,
+      x = NULL,
+      y = NULL
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 11, face = "bold"),
+      legend.position = "right",
+      panel.grid.major = element_line(color = "grey88"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(hjust = 0.5)
+    )
+}
+
+p_scmetab_metfiblabel_dotplot_raw <- make_energy_dotplot(
+  summary_df = scmetab_metfiblabel_summary,
+  group_col = "metfiblabel",
+  group_levels = stromal_types,
+  pathway_levels = scmetab_metfiblabel_pathways,
+  pathway_labels = scmetab_metfiblabel_dot_labels,
+  plot_title = "Fibroblast mean Glycolysis and TCA scores",
+  scale_by_column = FALSE
+)
+
+p_scmetab_metfiblabel_dotplot_scaled <- make_energy_dotplot(
+  summary_df = scmetab_metfiblabel_summary,
+  group_col = "metfiblabel",
+  group_levels = stromal_types,
+  pathway_levels = scmetab_metfiblabel_pathways,
+  pathway_labels = scmetab_metfiblabel_dot_labels,
+  plot_title = "Fibroblast mean Glycolysis and TCA scores - scaled by column",
+  scale_by_column = TRUE
+)
+
+p_scmetab_metfiblabel_mean_ci <- p_scmetab_metfiblabel_dotplot_raw
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_mean_ci.png"),
+  p_scmetab_metfiblabel_dotplot_raw,
+  width = 7.5,
+  height = 4.2,
+  dpi = 300
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_dotplot.png"),
+  p_scmetab_metfiblabel_dotplot_raw,
+  width = 6.6,
+  height = 3.8,
+  dpi = 300
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_dotplot_raw.png"),
+  p_scmetab_metfiblabel_dotplot_raw,
+  width = 6.6,
+  height = 3.8,
+  dpi = 300
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_dotplot_scaled_by_column.png"),
+  p_scmetab_metfiblabel_dotplot_scaled,
+  width = 6.6,
+  height = 3.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_dotplot_raw
+p_scmetab_metfiblabel_dotplot_scaled
+```
+
+```{r scmetabolism_metfiblabel_energy_heatmap, fig.width=5.5, fig.height=3.8}
+p_scmetab_metfiblabel_heatmap <- scmetab_metfiblabel_summary %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::mutate(mean_score_z = as.numeric(base::scale(mean_score))) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    pathway = factor(pathway, levels = rev(scmetab_metfiblabel_pathways)),
+    metfiblabel = factor(as.character(metfiblabel), levels = stromal_types)
+  ) %>%
+  ggplot(aes(x = metfiblabel, y = pathway, fill = mean_score_z)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = sprintf("%.3f", mean_score)), size = 4) +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "white",
+    high = "#B2182B",
+    midpoint = 0,
+    name = "Row z-score"
+  ) +
+  labs(
+    title = "Mean Glycolysis and TCA scores",
+    subtitle = "Numbers show raw mean AUCell scores",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_heatmap.png"),
+  p_scmetab_metfiblabel_heatmap,
+  width = 5.5,
+  height = 3.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_heatmap
+```
+
+## Glycolysis and TCA by IMC metfiblabel - single-cell distribution views
+
+```{r scmetabolism_metfiblabel_energy_ecdf, fig.width=8, fig.height=4.8}
+p_scmetab_metfiblabel_ecdf <- ggplot(
+  scmetab_metfiblabel_scores,
+  aes(x = score, color = metfiblabel)
+) +
+  stat_ecdf(linewidth = 1.15) +
+  scale_color_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759")) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_x") +
+  labs(
+    title = "Single-cell score distributions by IMC metfiblabel",
+    subtitle = "ECDF view; right-shifted curves indicate higher scores",
+    x = "scMetabolism AUCell score",
+    y = "Cumulative fraction of cells",
+    color = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_ecdf.png"),
+  p_scmetab_metfiblabel_ecdf,
+  width = 8,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_ecdf
+```
+
+```{r scmetabolism_metfiblabel_energy_quantile_shift, fig.width=8, fig.height=4.8}
+scmetab_metfiblabel_quantile_shift <- scmetab_metfiblabel_scores %>%
+  dplyr::group_by(pathway, metfiblabel) %>%
+  dplyr::summarise(
+    quantile = list(seq(0.05, 0.95, by = 0.05)),
+    score_quantile = list(stats::quantile(score, probs = seq(0.05, 0.95, by = 0.05), na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  tidyr::unnest(c(quantile, score_quantile)) %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = score_quantile) %>%
+  dplyr::mutate(delta_met_hi_vs_other = Met_hi_Fib - Other_Fib)
+
+write.csv(
+  scmetab_metfiblabel_quantile_shift,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_quantile_shift.csv"),
+  row.names = FALSE
+)
+
+p_scmetab_metfiblabel_quantile_shift <- ggplot(
+  scmetab_metfiblabel_quantile_shift,
+  aes(x = quantile, y = delta_met_hi_vs_other)
+) +
+  geom_hline(yintercept = 0, color = "grey35", linewidth = 0.4) +
+  geom_area(aes(fill = delta_met_hi_vs_other > 0), alpha = 0.45) +
+  geom_line(linewidth = 1, color = "grey20") +
+  geom_point(size = 1.7, color = "grey20") +
+  scale_fill_manual(values = c("TRUE" = "#B2182B", "FALSE" = "#2166AC"), guide = "none") +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Single-cell quantile shift: Met_hi_Fib minus Other_Fib",
+    subtitle = "Shows where in the distribution the group difference is largest",
+    x = "Distribution quantile",
+    y = "Delta AUCell score"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_quantile_shift.png"),
+  p_scmetab_metfiblabel_quantile_shift,
+  width = 8,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_quantile_shift
+```
+
+```{r scmetabolism_metfiblabel_energy_threshold_enrichment, fig.width=8, fig.height=4.8}
+scmetab_metfiblabel_threshold_enrichment <- scmetab_metfiblabel_scores %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(
+    threshold = list(stats::quantile(score, probs = seq(0.1, 0.9, by = 0.05), na.rm = TRUE)),
+    threshold_quantile = list(seq(0.1, 0.9, by = 0.05)),
+    .groups = "drop"
+  ) %>%
+  tidyr::unnest(c(threshold, threshold_quantile)) %>%
+  dplyr::left_join(scmetab_metfiblabel_scores, by = "pathway") %>%
+  dplyr::group_by(pathway, threshold_quantile, threshold, metfiblabel) %>%
+  dplyr::summarise(frac_above = mean(score >= threshold, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = metfiblabel, values_from = frac_above) %>%
+  dplyr::mutate(delta_frac_met_hi_vs_other = Met_hi_Fib - Other_Fib)
+
+write.csv(
+  scmetab_metfiblabel_threshold_enrichment,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_threshold_enrichment.csv"),
+  row.names = FALSE
+)
+
+p_scmetab_metfiblabel_threshold_enrichment <- ggplot(
+  scmetab_metfiblabel_threshold_enrichment,
+  aes(x = threshold_quantile, y = delta_frac_met_hi_vs_other)
+) +
+  geom_hline(yintercept = 0, color = "grey35", linewidth = 0.4) +
+  geom_col(aes(fill = delta_frac_met_hi_vs_other > 0), width = 0.035) +
+  scale_fill_manual(values = c("TRUE" = "#B2182B", "FALSE" = "#2166AC"), guide = "none") +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "High-score enrichment by threshold",
+    subtitle = "Met_hi_Fib fraction above threshold minus Other_Fib fraction",
+    x = "Pooled score threshold quantile",
+    y = "Delta fraction above threshold"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_threshold_enrichment.png"),
+  p_scmetab_metfiblabel_threshold_enrichment,
+  width = 8,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_threshold_enrichment
+```
+
+## IMC vs Xenium Glycolysis and TCA scores
+
+```{r scmetabolism_imc_xenium_correlation_data}
+score_cols <- c("glycolysis_score", "tca_score", "hif1a_score", "nox4_score")
+
+format_p <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "NA",
+    p < 0.001 ~ "<0.001",
+    TRUE ~ sprintf("%.3f", p)
+  )
+}
+
+make_imc_score <- function(markers, assay_name = "zrescaled") {
+  markers <- intersect(markers, rownames(spe))
+  if (length(markers) == 0) {
+    return(rep(NA_real_, ncol(spe)))
+  }
+  colMeans(as.matrix(SummarizedExperiment::assay(spe, assay_name)[markers, , drop = FALSE]), na.rm = TRUE)
+}
+
+if (!all(score_cols %in% colnames(SummarizedExperiment::colData(spe)))) {
+  spe$glycolysis_score <- make_imc_score(c("GLUT1", "HK1", "PFKL1_PFKM", "PKM2", "LDHA", "GAPDH"))
+  spe$tca_score <- make_imc_score(c("CS", "OGDH", "ATP5A", "SDHA"))
+  spe$hif1a_score <- make_imc_score("HIF1a")
+  spe$nox4_score <- make_imc_score("NOX4")
+}
+
+df_sample <- as.data.frame(SummarizedExperiment::colData(spe)[, c("sample_id", "metfiblabel", score_cols)])
+
+df_sample <- df_sample[df_sample$metfiblabel %in% c("Met_hi_Fib", "Met_int_Fib", "Other_Fib"), ]
+
+df_sample <- df_sample %>%
+  dplyr::group_by(sample_id, metfiblabel) %>%
+  dplyr::summarise(dplyr::across(dplyr::all_of(score_cols), mean, na.rm = TRUE), .groups = "drop")
+
+df_cell <- as.data.frame(SummarizedExperiment::colData(spe)[, c("sample_id", "metfiblabel", score_cols)]) %>%
+  dplyr::mutate(
+    KEY = colnames(spe),
+    sample_id = as.character(sample_id),
+    metfiblabel = as.character(metfiblabel),
+    .before = 1
+  ) %>%
+  dplyr::filter(
+    metfiblabel %in% c("Met_hi_Fib", "Met_int_Fib", "Other_Fib"),
+    !is.na(KEY),
+    KEY != ""
+  ) %>%
+  dplyr::distinct(KEY, .keep_all = TRUE)
+
+xenium_sample_candidates <- intersect(
+  c("SampleID", "sample_id", "SampleId", "Patient", "ROI"),
+  colnames(xenium_scmetab@meta.data)
+)
+
+xenium_sample_overlap <- vapply(
+  xenium_sample_candidates,
+  function(sample_col) {
+    cur_values <- as.character(xenium_scmetab@meta.data[[sample_col]])
+    cur_values <- cur_values[!is.na(cur_values) & cur_values != "" & cur_values != "not found"]
+    length(intersect(unique(df_sample$sample_id), unique(cur_values)))
+  },
+  numeric(1)
+)
+
+xenium_correlation_sample_col <- names(which.max(xenium_sample_overlap))
+
+if (length(xenium_correlation_sample_col) == 0 || is.na(xenium_correlation_sample_col)) {
+  xenium_correlation_sample_col <- "sample_id"
+}
+
+xenium_cell_key_col <- if ("KEY" %in% colnames(xenium_scmetab@meta.data)) "KEY" else "cell"
+
+xenium_correlation_pathways <- intersect(
+  c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)", "Oxidative phosphorylation"),
+  rownames(scmetab_scores)
+)
+
+xenium_correlation_cells <- make_scmetabolism_cell_df(
+  score_matrix = scmetab_scores,
+  meta_data = xenium_scmetab@meta.data,
+  pathways = xenium_correlation_pathways
+) %>%
+  dplyr::mutate(
+    sample_id = as.character(xenium_scmetab@meta.data[cell, xenium_correlation_sample_col, drop = TRUE]),
+    metfiblabel = as.character(metfiblabel),
+    xenium_cell_key = if (xenium_cell_key_col %in% colnames(xenium_scmetab@meta.data)) {
+      as.character(xenium_scmetab@meta.data[cell, xenium_cell_key_col, drop = TRUE])
+    } else {
+      as.character(cell)
+    },
+    xenium_score_name = dplyr::case_when(
+      pathway == "Glycolysis / Gluconeogenesis" ~ "xenium_glycolysis_score",
+      pathway == "Citrate cycle (TCA cycle)" ~ "xenium_tca_score",
+      pathway == "Oxidative phosphorylation" ~ "xenium_oxphos_score",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(
+    !is.na(xenium_score_name),
+    !is.na(sample_id),
+    sample_id != "",
+    sample_id != "not found",
+    !is.na(xenium_cell_key),
+    xenium_cell_key != "",
+    !is.na(metfiblabel)
+  )
+
+xenium_sample_scores <- xenium_correlation_cells %>%
+  dplyr::group_by(sample_id, metfiblabel, xenium_score_name) %>%
+  dplyr::summarise(xenium_score = mean(score, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = xenium_score_name, values_from = xenium_score)
+
+scmetab_imc_xenium_joined <- df_sample %>%
+  dplyr::inner_join(xenium_sample_scores, by = c("sample_id", "metfiblabel"))
+
+scmetab_imc_xenium_cor_long <- dplyr::bind_rows(
+  scmetab_imc_xenium_joined %>%
+    dplyr::transmute(
+      sample_id,
+      metfiblabel,
+      comparison = "Glycolysis",
+      imc_score = glycolysis_score,
+      xenium_score = xenium_glycolysis_score
+    ),
+  scmetab_imc_xenium_joined %>%
+    dplyr::transmute(
+      sample_id,
+      metfiblabel,
+      comparison = "TCA",
+      imc_score = tca_score,
+      xenium_score = xenium_tca_score
+    )
+) %>%
+  dplyr::filter(!is.na(imc_score), !is.na(xenium_score)) %>%
+  dplyr::mutate(comparison = factor(comparison, levels = c("Glycolysis", "TCA")))
+
+xenium_cell_scores <- xenium_correlation_cells %>%
+  dplyr::select(
+    xenium_cell_key,
+    cell,
+    sample_id,
+    metfiblabel,
+    xenium_score_name,
+    score
+  ) %>%
+  dplyr::distinct(xenium_cell_key, xenium_score_name, .keep_all = TRUE) %>%
+  tidyr::pivot_wider(names_from = xenium_score_name, values_from = score)
+
+scmetab_imc_xenium_cell_joined <- df_cell %>%
+  dplyr::inner_join(xenium_cell_scores, by = c("KEY" = "xenium_cell_key"), suffix = c("_imc", "_xenium")) %>%
+  dplyr::mutate(
+    sample_id = dplyr::coalesce(sample_id_xenium, sample_id_imc),
+    metfiblabel = dplyr::coalesce(metfiblabel_xenium, metfiblabel_imc),
+    metfiblabel_match = metfiblabel_imc == metfiblabel_xenium
+  ) %>%
+  dplyr::filter(!is.na(metfiblabel), metfiblabel %in% stromal_types)
+
+cell_correlation_specs <- data.frame(
+  comparison = c("Glycolysis", "TCA", "OXPHOS"),
+  imc_col = c("glycolysis_score", "tca_score", "tca_score"),
+  xenium_col = c("xenium_glycolysis_score", "xenium_tca_score", "xenium_oxphos_score"),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::filter(imc_col %in% colnames(scmetab_imc_xenium_cell_joined), xenium_col %in% colnames(scmetab_imc_xenium_cell_joined))
+
+if (nrow(cell_correlation_specs) > 0) {
+  scmetab_imc_xenium_cell_cor_long <- dplyr::bind_rows(
+    lapply(seq_len(nrow(cell_correlation_specs)), function(i) {
+      cur_spec <- cell_correlation_specs[i, ]
+      scmetab_imc_xenium_cell_joined %>%
+        dplyr::transmute(
+          KEY,
+          cell,
+          sample_id,
+          metfiblabel,
+          metfiblabel_match,
+          comparison = cur_spec$comparison,
+          imc_score = .data[[cur_spec$imc_col]],
+          xenium_score = .data[[cur_spec$xenium_col]]
+        )
+    })
+  ) %>%
+    dplyr::filter(!is.na(imc_score), !is.na(xenium_score)) %>%
+    dplyr::mutate(
+      comparison = factor(comparison, levels = cell_correlation_specs$comparison),
+      metfiblabel = factor(as.character(metfiblabel), levels = stromal_types)
+    )
+} else {
+  scmetab_imc_xenium_cell_cor_long <- tibble::tibble(
+    KEY = character(),
+    cell = character(),
+    sample_id = character(),
+    metfiblabel = factor(character(), levels = stromal_types),
+    metfiblabel_match = logical(),
+    comparison = factor(character(), levels = character()),
+    imc_score = numeric(),
+    xenium_score = numeric()
+  )
+}
+
+cor_test_one <- function(x, y, method = "spearman") {
+  if (length(stats::complete.cases(x, y)) < 3 || sum(stats::complete.cases(x, y)) < 3) {
+    return(c(estimate = NA_real_, p.value = NA_real_))
+  }
+  res <- suppressWarnings(stats::cor.test(x, y, method = method, exact = FALSE))
+  c(estimate = unname(res$estimate), p.value = res$p.value)
+}
+
+scmetab_imc_xenium_cor_stats <- scmetab_imc_xenium_cor_long %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    spearman_rho = cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    label = paste0(
+      "Spearman rho=", sprintf("%.2f", spearman_rho),
+      "\np=", format_p(spearman_p),
+      "\nn=", n
+    )
+  )
+
+scmetab_imc_xenium_cell_cor_stats_overall <- scmetab_imc_xenium_cell_cor_long %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    stratum = "All matched cells",
+    n = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id),
+    spearman_rho = cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  )
+
+scmetab_imc_xenium_cell_cor_stats_by_label <- scmetab_imc_xenium_cell_cor_long %>%
+  dplyr::group_by(comparison, metfiblabel) %>%
+  dplyr::summarise(
+    stratum = as.character(dplyr::first(metfiblabel)),
+    n = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id),
+    spearman_rho = cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  )
+
+scmetab_imc_xenium_cell_cor_stats <- dplyr::bind_rows(
+  scmetab_imc_xenium_cell_cor_stats_overall,
+  scmetab_imc_xenium_cell_cor_stats_by_label
+) %>%
+  dplyr::mutate(
+    label = paste0(
+      "rho=", sprintf("%.2f", spearman_rho),
+      "\np=", format_p(spearman_p),
+      "\nn=", n
+    )
+  )
+
+scmetab_imc_xenium_availability <- data.frame(
+  xenium_pathway = c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)", "Oxidative phosphorylation"),
+  available_in_xenium_scmetabolism = c(
+    "Glycolysis / Gluconeogenesis",
+    "Citrate cycle (TCA cycle)",
+    "Oxidative phosphorylation"
+  ) %in% rownames(scmetab_scores)
+)
+
+scmetab_imc_xenium_key_overlap <- data.frame(
+  xenium_sample_column = names(xenium_sample_overlap),
+  n_matching_imc_sample_ids = as.integer(xenium_sample_overlap),
+  selected = names(xenium_sample_overlap) == xenium_correlation_sample_col
+)
+
+scmetab_imc_xenium_cell_key_overlap <- data.frame(
+  xenium_cell_key_column = xenium_cell_key_col,
+  n_imc_cells_with_key = dplyr::n_distinct(df_cell$KEY),
+  n_xenium_cells_with_key = dplyr::n_distinct(xenium_cell_scores$xenium_cell_key),
+  n_matched_cells = dplyr::n_distinct(scmetab_imc_xenium_cell_joined$KEY),
+  n_matched_cell_pathway_pairs = nrow(scmetab_imc_xenium_cell_cor_long)
+)
+
+write.csv(df_sample, file.path(scmetab_output_dir, "imc_metfiblabel_sample_scores.csv"), row.names = FALSE)
+write.csv(df_cell, file.path(scmetab_output_dir, "imc_metfiblabel_cell_scores.csv"), row.names = FALSE)
+write.csv(
+  scmetab_imc_xenium_joined,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_sample_joined.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cell_joined,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_joined.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cor_long,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_correlation_long.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cell_cor_long,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_correlation_long.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cor_stats,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_correlation_stats.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cell_cor_stats,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_correlation_stats.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_availability,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_pathway_availability.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_key_overlap,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_sample_key_overlap.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_imc_xenium_cell_key_overlap,
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_key_overlap.csv"),
+  row.names = FALSE
+)
+
+dplyr::bind_rows(
+  scmetab_imc_xenium_cor_stats %>% dplyr::mutate(level = "sample"),
+  scmetab_imc_xenium_cell_cor_stats_overall %>% dplyr::mutate(level = "single_cell")
+)
+```
+
+```{r scmetabolism_imc_xenium_correlation_plot, fig.width=8.5, fig.height=4.8}
+if (nrow(scmetab_imc_xenium_cor_long) > 0) {
+  p_scmetab_imc_xenium_correlation <- ggplot(
+    scmetab_imc_xenium_cor_long,
+    aes(x = imc_score, y = xenium_score, color = metfiblabel)
+  ) +
+    geom_point(size = 3, alpha = 0.9) +
+    geom_smooth(method = "lm", se = FALSE, color = "grey35", linewidth = 0.7) +
+    geom_text(
+      data = scmetab_imc_xenium_cor_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.3
+    ) +
+    scale_color_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759", "Met_int_Fib" = "#59A14F")) +
+    facet_wrap(~ comparison, nrow = 1, scales = "free") +
+    labs(
+      title = "IMC marker-score vs Xenium scMetabolism score",
+      subtitle = paste0("Aggregated by IMC sample_id and Xenium ", xenium_correlation_sample_col, " + metfiblabel"),
+      x = "IMC mean score",
+      y = "Xenium mean scMetabolism AUCell score",
+      color = NULL
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "top",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_imc_xenium_correlation <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping IMC/Xenium sample_id + metfiblabel groups found.\n",
+        "Selected Xenium sample column: ", xenium_correlation_sample_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "IMC marker-score vs Xenium scMetabolism score")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_correlation.png"),
+  p_scmetab_imc_xenium_correlation,
+  width = 8.5,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_imc_xenium_correlation
+```
+
+```{r scmetabolism_imc_xenium_cell_correlation_density_plot, fig.width=8.5, fig.height=6.2}
+cell_correlation_plot_stats <- scmetab_imc_xenium_cell_cor_stats %>%
+  dplyr::filter(!is.na(metfiblabel)) %>%
+  dplyr::mutate(
+    metfiblabel = factor(as.character(metfiblabel), levels = stromal_types),
+    comparison = factor(as.character(comparison), levels = levels(scmetab_imc_xenium_cell_cor_long$comparison))
+  )
+
+if (nrow(scmetab_imc_xenium_cell_cor_long) > 0) {
+  p_scmetab_imc_xenium_cell_density <- ggplot(
+    scmetab_imc_xenium_cell_cor_long,
+    aes(x = imc_score, y = xenium_score)
+  ) +
+    geom_bin2d(bins = 45) +
+    geom_smooth(method = "lm", se = FALSE, color = "grey15", linewidth = 0.55) +
+    geom_text(
+      data = cell_correlation_plot_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.1
+    ) +
+    scale_fill_gradient(low = "grey94", high = "#2C7FB8", trans = "sqrt", name = "Cells") +
+    facet_grid(metfiblabel ~ comparison, scales = "free") +
+    labs(
+      title = "Single-cell matched IMC marker score vs Xenium scMetabolism score",
+      subtitle = paste0("Joined by ", xenium_cell_key_col, "; binned cells, statistics from all matched cells"),
+      x = "IMC single-cell marker score",
+      y = "Xenium single-cell scMetabolism AUCell score"
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_imc_xenium_cell_density <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping IMC/Xenium cells found.\n",
+        "Selected Xenium cell key column: ", xenium_cell_key_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "Single-cell matched IMC marker score vs Xenium scMetabolism score")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_correlation_density.png"),
+  p_scmetab_imc_xenium_cell_density,
+  width = 8.5,
+  height = 6.2,
+  dpi = 300
+)
+
+p_scmetab_imc_xenium_cell_density
+```
+
+```{r scmetabolism_imc_xenium_cell_correlation_point_plot, fig.width=8.5, fig.height=4.8}
+cell_point_limit <- 40000
+
+if (nrow(scmetab_imc_xenium_cell_cor_long) > 0) {
+  set.seed(1)
+  cell_point_data <- scmetab_imc_xenium_cell_cor_long %>%
+    dplyr::group_by(comparison, metfiblabel) %>%
+    dplyr::group_modify(function(.x, .y) {
+      if (nrow(.x) > cell_point_limit) {
+        dplyr::slice_sample(.x, n = cell_point_limit)
+      } else {
+        .x
+      }
+    }) %>%
+    dplyr::ungroup()
+
+  cell_point_subtitle <- if (nrow(cell_point_data) < nrow(scmetab_imc_xenium_cell_cor_long)) {
+    paste0("Up to ", cell_point_limit, " cells per facet plotted; statistics use all matched cells")
+  } else {
+    "All matched cells plotted and used for statistics"
+  }
+
+  p_scmetab_imc_xenium_cell_points <- ggplot(
+    cell_point_data,
+    aes(x = imc_score, y = xenium_score, color = metfiblabel)
+  ) +
+    geom_point(alpha = 0.12, size = 0.35, stroke = 0) +
+    geom_smooth(
+      data = scmetab_imc_xenium_cell_cor_long,
+      method = "lm",
+      se = FALSE,
+      linewidth = 0.65,
+      alpha = 0.8
+    ) +
+    geom_text(
+      data = scmetab_imc_xenium_cell_cor_stats_overall %>%
+        dplyr::mutate(
+          label = paste0(
+            "rho=", sprintf("%.2f", spearman_rho),
+            "\np=", format_p(spearman_p),
+            "\nn=", n
+          ),
+          comparison = factor(as.character(comparison), levels = levels(scmetab_imc_xenium_cell_cor_long$comparison))
+        ),
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.2
+    ) +
+    scale_color_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759", "Met_int_Fib" = "#59A14F")) +
+    facet_wrap(~ comparison, nrow = 1, scales = "free") +
+    labs(
+      title = "Single-cell IMC-Xenium correlation point cloud",
+      subtitle = cell_point_subtitle,
+      x = "IMC single-cell marker score",
+      y = "Xenium single-cell scMetabolism AUCell score",
+      color = NULL
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "top",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_imc_xenium_cell_points <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping IMC/Xenium cells found.\n",
+        "Selected Xenium cell key column: ", xenium_cell_key_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "Single-cell IMC-Xenium correlation point cloud")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_imc_xenium_cell_correlation_points.png"),
+  p_scmetab_imc_xenium_cell_points,
+  width = 8.5,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_imc_xenium_cell_points
+```
+
+## Glycolysis and TCA by IMC metfiblabel - sample-level paired views (not run)
+
+```{r scmetabolism_metfiblabel_energy_sample_stats, eval=FALSE}
+scmetab_sample_col <- intersect(
+  c("sample_id", "SampleID", "SampleId", "Patient", "ROI"),
+  colnames(xenium_scmetab@meta.data)
+)[1]
+
+if (is.na(scmetab_sample_col)) {
+  stop("No sample-level column was found in xenium_scmetab@meta.data.")
+}
+
+scmetab_score_cells <- colnames(scmetab_scores)
+if (is.null(scmetab_score_cells) || !all(scmetab_score_cells %in% rownames(xenium_scmetab@meta.data))) {
+  scmetab_score_cells <- rownames(xenium_scmetab@meta.data)[seq_len(ncol(scmetab_scores))]
+}
+
+scmetab_metfiblabel_sample_cell_scores <- as.data.frame(
+  t(as.matrix(scmetab_scores[scmetab_metfiblabel_pathways, , drop = FALSE])),
+  check.names = FALSE
+) %>%
+  dplyr::mutate(
+    cell = scmetab_score_cells,
+    sample_id = as.character(xenium_scmetab@meta.data[cell, scmetab_sample_col, drop = TRUE]),
+    metfiblabel = factor(
+      as.character(xenium_scmetab@meta.data[cell, "metfiblabel", drop = TRUE]),
+      levels = stromal_types
+    )
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(scmetab_metfiblabel_pathways),
+    names_to = "pathway",
+    values_to = "score"
+  ) %>%
+  dplyr::filter(!is.na(sample_id), sample_id != "", !is.na(metfiblabel)) %>%
+  dplyr::mutate(pathway = factor(pathway, levels = scmetab_metfiblabel_pathways))
+
+scmetab_metfiblabel_sample_summary <- scmetab_metfiblabel_sample_cell_scores %>%
+  dplyr::group_by(sample_id, pathway, metfiblabel) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+scmetab_metfiblabel_sample_paired <- scmetab_metfiblabel_sample_summary %>%
+  dplyr::select(sample_id, pathway, metfiblabel, mean_score, median_score, n_cells) %>%
+  tidyr::pivot_wider(
+    names_from = metfiblabel,
+    values_from = c(mean_score, median_score, n_cells)
+  ) %>%
+  dplyr::filter(!is.na(mean_score_Other_Fib), !is.na(mean_score_Met_hi_Fib)) %>%
+  dplyr::mutate(
+    mean_delta_met_hi_vs_other = mean_score_Met_hi_Fib - mean_score_Other_Fib,
+    median_delta_met_hi_vs_other = median_score_Met_hi_Fib - median_score_Other_Fib,
+    pathway = factor(as.character(pathway), levels = scmetab_metfiblabel_pathways)
+  )
+
+format_p <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "NA",
+    p < 0.001 ~ "<0.001",
+    TRUE ~ sprintf("%.3f", p)
+  )
+}
+
+paired_wilcox_p <- function(df) {
+  if (nrow(df) < 2) return(NA_real_)
+  stats::wilcox.test(
+    df$mean_score_Met_hi_Fib,
+    df$mean_score_Other_Fib,
+    paired = TRUE,
+    exact = FALSE
+  )$p.value
+}
+
+single_cell_wilcox_p <- function(df) {
+  if (dplyr::n_distinct(df$metfiblabel) < 2) return(NA_real_)
+  stats::wilcox.test(score ~ metfiblabel, data = df, exact = FALSE)$p.value
+}
+
+scmetab_metfiblabel_sample_stats <- scmetab_metfiblabel_sample_paired %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(
+    n_paired_samples = dplyr::n(),
+    paired_wilcox_p = paired_wilcox_p(dplyr::cur_data()),
+    mean_delta_met_hi_vs_other = mean(mean_delta_met_hi_vs_other, na.rm = TRUE),
+    median_delta_met_hi_vs_other = median(mean_delta_met_hi_vs_other, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+scmetab_metfiblabel_single_cell_stats <- scmetab_metfiblabel_sample_cell_scores %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(
+    n_other_cells = sum(metfiblabel == "Other_Fib"),
+    n_met_hi_cells = sum(metfiblabel == "Met_hi_Fib"),
+    single_cell_wilcox_p = single_cell_wilcox_p(dplyr::cur_data()),
+    .groups = "drop"
+  )
+
+scmetab_metfiblabel_test_summary <- scmetab_metfiblabel_sample_stats %>%
+  dplyr::left_join(scmetab_metfiblabel_single_cell_stats, by = "pathway") %>%
+  dplyr::mutate(
+    paired_wilcox_label = paste0("paired Wilcoxon p=", format_p(paired_wilcox_p)),
+    single_cell_wilcox_label = paste0("single-cell Wilcoxon p=", format_p(single_cell_wilcox_p))
+  )
+
+scmetab_metfiblabel_paired_long <- scmetab_metfiblabel_sample_paired %>%
+  dplyr::select(sample_id, pathway, Other_Fib = mean_score_Other_Fib, Met_hi_Fib = mean_score_Met_hi_Fib) %>%
+  tidyr::pivot_longer(
+    cols = c("Other_Fib", "Met_hi_Fib"),
+    names_to = "metfiblabel",
+    values_to = "mean_score"
+  ) %>%
+  dplyr::mutate(metfiblabel = factor(metfiblabel, levels = stromal_types))
+
+write.csv(
+  scmetab_metfiblabel_sample_cell_scores,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_cell_scores.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_metfiblabel_sample_summary,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_summary.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_metfiblabel_sample_paired,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_paired.csv"),
+  row.names = FALSE
+)
+write.csv(
+  scmetab_metfiblabel_test_summary,
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_tests.csv"),
+  row.names = FALSE
+)
+
+scmetab_metfiblabel_test_summary
+```
+
+```{r scmetabolism_metfiblabel_energy_sample_paired_lines, fig.width=7.5, fig.height=5, eval=FALSE}
+p_scmetab_metfiblabel_sample_paired_lines <- ggplot(
+  scmetab_metfiblabel_paired_long,
+  aes(x = metfiblabel, y = mean_score, group = sample_id)
+) +
+  geom_line(color = "grey55", alpha = 0.65, linewidth = 0.6) +
+  geom_point(aes(color = metfiblabel), size = 2.6, alpha = 0.9) +
+  geom_text(
+    data = scmetab_metfiblabel_test_summary,
+    aes(x = 1.5, y = Inf, label = paired_wilcox_label),
+    inherit.aes = FALSE,
+    vjust = 1.4,
+    size = 3.3
+  ) +
+  scale_color_manual(values = c("Other_Fib" = "#4E79A7", "Met_hi_Fib" = "#E15759")) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  labs(
+    title = "Sample-level paired Glycolysis and TCA scores",
+    subtitle = paste0("One dot per sample per metfiblabel; sample column: ", scmetab_sample_col),
+    x = NULL,
+    y = "Sample mean scMetabolism AUCell score",
+    color = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 11, angle = 20, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_paired_lines.png"),
+  p_scmetab_metfiblabel_sample_paired_lines,
+  width = 7.5,
+  height = 5,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_sample_paired_lines
+```
+
+```{r scmetabolism_metfiblabel_energy_sample_delta, fig.width=7.5, fig.height=4.6, eval=FALSE}
+p_scmetab_metfiblabel_sample_delta <- ggplot(
+  scmetab_metfiblabel_sample_paired,
+  aes(x = pathway, y = mean_delta_met_hi_vs_other)
+) +
+  geom_hline(yintercept = 0, color = "grey35", linewidth = 0.4) +
+  geom_point(
+    aes(color = mean_delta_met_hi_vs_other > 0),
+    position = position_jitter(width = 0.08, height = 0),
+    size = 3,
+    alpha = 0.9
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    width = 0.42,
+    color = "black",
+    linewidth = 0.35
+  ) +
+  geom_text(
+    data = scmetab_metfiblabel_test_summary,
+    aes(x = pathway, y = Inf, label = paired_wilcox_label),
+    inherit.aes = FALSE,
+    vjust = 1.4,
+    size = 3.3
+  ) +
+  scale_color_manual(values = c("TRUE" = "#B2182B", "FALSE" = "#2166AC"), guide = "none") +
+  labs(
+    title = "Sample-level paired differences",
+    subtitle = "Each dot is one sample: Met_hi_Fib mean minus Other_Fib mean",
+    x = NULL,
+    y = "Delta scMetabolism AUCell score"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 20, hjust = 1),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_delta.png"),
+  p_scmetab_metfiblabel_sample_delta,
+  width = 7.5,
+  height = 4.6,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_sample_delta
+```
+
+```{r scmetabolism_metfiblabel_energy_sample_dumbbell, fig.width=7.5, fig.height=4.5, eval=FALSE}
+p_scmetab_metfiblabel_sample_dumbbell <- ggplot(scmetab_metfiblabel_sample_paired) +
+  geom_segment(
+    aes(
+      x = mean_score_Other_Fib,
+      xend = mean_score_Met_hi_Fib,
+      y = sample_id,
+      yend = sample_id
+    ),
+    color = "grey65",
+    linewidth = 0.55,
+    alpha = 0.75
+  ) +
+  geom_point(aes(x = mean_score_Other_Fib, y = sample_id), color = "#4E79A7", size = 2.2) +
+  geom_point(aes(x = mean_score_Met_hi_Fib, y = sample_id), color = "#E15759", size = 2.2) +
+  geom_text(
+    data = scmetab_metfiblabel_test_summary,
+    aes(x = Inf, y = Inf, label = paired_wilcox_label),
+    inherit.aes = FALSE,
+    hjust = 1.05,
+    vjust = 1.3,
+    size = 3.2
+  ) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_x") +
+  labs(
+    title = "Sample-level dumbbell view",
+    subtitle = "One connected pair per sample",
+    x = "Sample mean scMetabolism AUCell score",
+    y = "Sample"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_metfiblabel_energy_sample_dumbbell.png"),
+  p_scmetab_metfiblabel_sample_dumbbell,
+  width = 7.5,
+  height = 4.5,
+  dpi = 300
+)
+
+p_scmetab_metfiblabel_sample_dumbbell
+```
+
+# scMetabolism on Xenium endothelial clusters {.tabset .tabset-pill}
+
+```{r scmetabolism_ec_prepare_sfe}
+if (!exists("spe")) {
+  load(project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"))
+}
+
+if (!exists("sfe")) {
+  sfe <- readRDS(project_path("Revision/Nan annotation/Data/Xenium sfe objects/Xenium sfe object/sfe_09032026.rds"))
+}
+
+if (!"Rphenograph_200EC" %in% colnames(SummarizedExperiment::colData(spe))) {
+  stop("The IMC spe object must contain colData(spe)$Rphenograph_200EC for the EC metabolic labels.")
+}
+
+if (!"KEY" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain colData(sfe)$KEY to transfer metEClabel from the IMC spe.")
+}
+
+if (!"lv2_anno_new" %in% colnames(SummarizedExperiment::colData(sfe))) {
+  stop("The Xenium sfe object must contain lv2_anno_new for the EC cluster selection.")
+}
+
+spe$metEClabel <- dplyr::case_when(
+  spe$Rphenograph_200EC %in% c("1", "2") ~ "Met_hi_EC",
+  spe$Rphenograph_200EC == "3" ~ "Met_int_EC",
+  TRUE ~ NA_character_
+)
+
+ec_map <- data.frame(
+  KEY = colnames(spe),
+  metEClabel = spe$metEClabel,
+  stringsAsFactors = FALSE
+)
+
+ec_idx <- match(SummarizedExperiment::colData(sfe)$KEY, ec_map$KEY)
+sfe$metEClabel <- ec_map$metEClabel[ec_idx]
+
+ec_met_levels <- c("Met_int_EC", "Met_hi_EC")
+ec_met_levels_plot <- c("Met_hi_EC", "Met_int_EC")
+ec_lv2_preferred_order <- c(
+  "ACKR1_EC",
+  "ACTA2_EC",
+  "cycling_EC",
+  "EPC",
+  "HEY1_EC",
+  "lymphatic_EC"
+)
+
+keep_ec_scmetab <- !is.na(sfe$lv2_anno_new) &
+  sfe$lv2_anno_new %in% ec_lv2_preferred_order &
+  !is.na(sfe$metEClabel) &
+  sfe$metEClabel %in% ec_met_levels
+
+sfe_ec_scmetab <- sfe[, keep_ec_scmetab]
+
+ec_lv2_levels <- c(
+  intersect(ec_lv2_preferred_order, unique(as.character(sfe_ec_scmetab$lv2_anno_new))),
+  setdiff(sort(unique(as.character(sfe_ec_scmetab$lv2_anno_new))), ec_lv2_preferred_order)
+)
+
+sfe_ec_scmetab$lv2_anno_new <- factor(as.character(sfe_ec_scmetab$lv2_anno_new), levels = ec_lv2_levels)
+sfe_ec_scmetab$metEClabel <- factor(as.character(sfe_ec_scmetab$metEClabel), levels = ec_met_levels)
+sfe_ec_scmetab$lv2_by_met <- paste(sfe_ec_scmetab$lv2_anno_new, sfe_ec_scmetab$metEClabel, sep = "_")
+
+ec_lv2_by_met_levels <- unlist(lapply(ec_lv2_levels, function(cur_lv2) {
+  paste(cur_lv2, ec_met_levels_plot, sep = "_")
+}), use.names = FALSE)
+ec_lv2_by_met_levels <- intersect(ec_lv2_by_met_levels, unique(as.character(sfe_ec_scmetab$lv2_by_met)))
+sfe_ec_scmetab$lv2_by_met <- factor(sfe_ec_scmetab$lv2_by_met, levels = ec_lv2_by_met_levels)
+
+table(sfe_ec_scmetab$lv2_anno_new, sfe_ec_scmetab$metEClabel)
+```
+
+```{r scmetabolism_ec_run, message=FALSE, warning=FALSE}
+ec_counts_mat <- to_dgC(SummarizedExperiment::assay(sfe_ec_scmetab, "counts"))
+ec_scmetab_meta <- as.data.frame(SummarizedExperiment::colData(sfe_ec_scmetab))
+rownames(ec_scmetab_meta) <- colnames(sfe_ec_scmetab)
+
+old_assay_version_ec <- getOption("Seurat.object.assay.version")
+options(Seurat.object.assay.version = "v3")
+
+ec_xenium_scmetab <- Seurat::CreateSeuratObject(
+  counts = ec_counts_mat,
+  meta.data = ec_scmetab_meta,
+  assay = "RNA",
+  project = "Xenium_EC_scMetabolism"
+)
+
+if (is.null(old_assay_version_ec)) {
+  options(Seurat.object.assay.version = NULL)
+} else {
+  options(Seurat.object.assay.version = old_assay_version_ec)
+}
+
+ec_xenium_scmetab <- Seurat::NormalizeData(ec_xenium_scmetab, verbose = FALSE)
+ec_xenium_scmetab$lv2_anno_new <- factor(as.character(ec_xenium_scmetab$lv2_anno_new), levels = ec_lv2_levels)
+ec_xenium_scmetab$metEClabel <- factor(as.character(ec_xenium_scmetab$metEClabel), levels = ec_met_levels)
+ec_xenium_scmetab$lv2_by_met <- factor(as.character(ec_xenium_scmetab$lv2_by_met), levels = ec_lv2_by_met_levels)
+Seurat::Idents(ec_xenium_scmetab) <- "lv2_anno_new"
+
+ec_detected_cores <- parallel::detectCores(logical = FALSE)
+ec_scmetab_ncores <- ifelse(is.na(ec_detected_cores), 1, min(2, ec_detected_cores))
+
+ec_xenium_scmetab <- scMetabolism::sc.metabolism.Seurat(
+  obj = ec_xenium_scmetab,
+  method = "AUCell",
+  imputation = FALSE,
+  ncores = ec_scmetab_ncores,
+  metabolism.type = "KEGG"
+)
+
+ec_scmetab_scores <- ec_xenium_scmetab@assays$METABOLISM$score
+ec_scmetab_pathway_variance <- sort(
+  apply(as.matrix(ec_scmetab_scores), 1, stats::var, na.rm = TRUE),
+  decreasing = TRUE
+)
+
+ec_scmetab_preferred_pathways <- c(
+  "Glycolysis / Gluconeogenesis",
+  "Citrate cycle (TCA cycle)",
+  "Oxidative phosphorylation",
+  "Pentose phosphate pathway",
+  "Pyruvate metabolism",
+  "Fatty acid biosynthesis",
+  "Fatty acid degradation",
+  "Glutathione metabolism",
+  "Purine metabolism",
+  "Pyrimidine metabolism"
+)
+
+ec_scmetab_dot_pathways <- unique(c(
+  intersect(ec_scmetab_preferred_pathways, rownames(ec_scmetab_scores)),
+  names(head(ec_scmetab_pathway_variance, 20))
+))
+ec_scmetab_dot_pathways <- ec_scmetab_dot_pathways[seq_len(min(30, length(ec_scmetab_dot_pathways)))]
+ec_scmetab_heatmap_pathways <- names(head(ec_scmetab_pathway_variance, 30))
+
+scmetab_output_dir <- file.path(getwd(), "scmetabolism_outputs")
+dir.create(scmetab_output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r scmetabolism_ec_helpers}
+make_scmetabolism_ec_cell_df <- function(score_matrix, meta_data, pathways) {
+  score_matrix <- as.matrix(score_matrix)
+  score_cells <- colnames(score_matrix)
+  if (is.null(score_cells) || !all(score_cells %in% rownames(meta_data))) {
+    score_cells <- rownames(meta_data)[seq_len(ncol(score_matrix))]
+  }
+
+  score_df <- as.data.frame(t(score_matrix[pathways, , drop = FALSE]), check.names = FALSE)
+  score_df$cell <- score_cells
+  score_df$lv2_anno_new <- meta_data[score_df$cell, "lv2_anno_new", drop = TRUE]
+  score_df$metEClabel <- meta_data[score_df$cell, "metEClabel", drop = TRUE]
+  score_df$lv2_by_met <- meta_data[score_df$cell, "lv2_by_met", drop = TRUE]
+
+  score_df %>%
+    tidyr::pivot_longer(
+      cols = dplyr::all_of(pathways),
+      names_to = "pathway",
+      values_to = "score"
+    ) %>%
+    dplyr::mutate(
+      lv2_anno_new = factor(as.character(lv2_anno_new), levels = ec_lv2_levels),
+      metEClabel = factor(as.character(metEClabel), levels = ec_met_levels),
+      lv2_by_met = factor(as.character(lv2_by_met), levels = ec_lv2_by_met_levels),
+      pathway = factor(pathway, levels = pathways)
+    )
+}
+
+summarize_ec_scmetabolism <- function(score_matrix, meta_data, group_var, pathways = rownames(score_matrix)) {
+  score_df <- as.data.frame(t(as.matrix(score_matrix)), check.names = FALSE)
+  score_cells <- colnames(score_matrix)
+  if (is.null(score_cells) || !all(score_cells %in% rownames(meta_data))) {
+    score_cells <- rownames(meta_data)[seq_len(ncol(score_matrix))]
+  }
+  score_df$cell <- score_cells
+  score_df$group <- as.character(meta_data[score_df$cell, group_var, drop = TRUE])
+
+  tidyr::pivot_longer(
+    score_df,
+    cols = dplyr::all_of(pathways),
+    names_to = "pathway",
+    values_to = "score"
+  ) %>%
+    dplyr::filter(!is.na(group), group != "") %>%
+    dplyr::group_by(group, pathway) %>%
+    dplyr::summarise(
+      mean_score = mean(score, na.rm = TRUE),
+      median_score = median(score, na.rm = TRUE),
+      n_cells = dplyr::n(),
+      .groups = "drop"
+    )
+}
+```
+
+## EC lv2_anno_new
+
+```{r scmetabolism_ec_lv2_plots, fig.width=12, fig.height=8}
+p_scmetab_ec_dot_lv2 <- scMetabolism::DotPlot.metabolism(
+  obj = ec_xenium_scmetab,
+  pathway = ec_scmetab_dot_pathways,
+  phenotype = "lv2_anno_new",
+  norm = "y"
+) +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_lv2_dotplot.png"),
+  p_scmetab_ec_dot_lv2,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+p_scmetab_ec_dot_lv2
+```
+
+```{r scmetabolism_ec_lv2_heatmap, fig.width=8.5, fig.height=7.5}
+ec_scmetab_summary_lv2 <- summarize_ec_scmetabolism(
+  ec_scmetab_scores,
+  ec_xenium_scmetab@meta.data,
+  "lv2_anno_new",
+  ec_scmetab_heatmap_pathways
+)
+
+p_scmetab_ec_heatmap_lv2 <- plot_scmetabolism_heatmap(
+  ec_scmetab_summary_lv2,
+  ec_lv2_levels,
+  ec_scmetab_heatmap_pathways,
+  "Xenium EC scMetabolism by lv2_anno_new"
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_lv2_heatmap.png"),
+  p_scmetab_ec_heatmap_lv2,
+  width = 8.5,
+  height = 7.5,
+  dpi = 300
+)
+
+p_scmetab_ec_heatmap_lv2
+```
+
+## EC lv2_by_met
+
+```{r scmetabolism_ec_lv2_by_met_plots, fig.width=14, fig.height=8}
+Seurat::Idents(ec_xenium_scmetab) <- "lv2_by_met"
+
+p_scmetab_ec_dot_lv2_by_met <- scMetabolism::DotPlot.metabolism(
+  obj = ec_xenium_scmetab,
+  pathway = ec_scmetab_dot_pathways,
+  phenotype = "lv2_by_met",
+  norm = "y"
+) +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_lv2_by_met_dotplot.png"),
+  p_scmetab_ec_dot_lv2_by_met,
+  width = 14,
+  height = 8,
+  dpi = 300
+)
+
+p_scmetab_ec_dot_lv2_by_met
+```
+
+```{r scmetabolism_ec_lv2_by_met_heatmap, fig.width=11, fig.height=7.5}
+ec_scmetab_summary_lv2_by_met <- summarize_ec_scmetabolism(
+  ec_scmetab_scores,
+  ec_xenium_scmetab@meta.data,
+  "lv2_by_met",
+  ec_scmetab_heatmap_pathways
+)
+
+p_scmetab_ec_heatmap_lv2_by_met <- plot_scmetabolism_heatmap(
+  ec_scmetab_summary_lv2_by_met,
+  ec_lv2_by_met_levels,
+  ec_scmetab_heatmap_pathways,
+  "Xenium EC scMetabolism by lv2_by_met"
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_lv2_by_met_heatmap.png"),
+  p_scmetab_ec_heatmap_lv2_by_met,
+  width = 11,
+  height = 7.5,
+  dpi = 300
+)
+
+p_scmetab_ec_heatmap_lv2_by_met
+```
+
+## EC Glycolysis and TCA by metEClabel
+
+```{r scmetabolism_ec_energy_metlabel_data}
+ec_energy_pathways <- intersect(
+  c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)", "Oxidative phosphorylation"),
+  rownames(ec_scmetab_scores)
+)
+
+if (length(ec_energy_pathways) == 0) {
+  stop("Glycolysis, TCA, and OXPHOS pathways are not present in the EC scMetabolism scores.")
+}
+
+ec_energy_display_labels <- c(
+  "Glycolysis / Gluconeogenesis" = "Glycolysis / Gluconeogenesis",
+  "Citrate cycle (TCA cycle)" = "TCA cycle",
+  "Oxidative phosphorylation" = "OXPHOS"
+)
+
+ec_scmetab_metlabel_scores <- make_scmetabolism_ec_cell_df(
+  score_matrix = ec_scmetab_scores,
+  meta_data = ec_xenium_scmetab@meta.data,
+  pathways = ec_energy_pathways
+) %>%
+  dplyr::filter(!is.na(metEClabel)) %>%
+  dplyr::mutate(
+    metEClabel = factor(as.character(metEClabel), levels = ec_met_levels),
+    pathway = factor(as.character(pathway), levels = ec_energy_pathways)
+  ) %>%
+  dplyr::select(cell, metEClabel, pathway, score)
+
+ec_scmetab_metlabel_summary <- ec_scmetab_metlabel_scores %>%
+  dplyr::group_by(pathway, metEClabel) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+ec_scmetab_metlabel_delta <- ec_scmetab_metlabel_summary %>%
+  dplyr::filter(pathway %in% c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)")) %>%
+  dplyr::select(pathway, metEClabel, mean_score, median_score) %>%
+  tidyr::pivot_wider(names_from = metEClabel, values_from = c(mean_score, median_score)) %>%
+  dplyr::mutate(
+    mean_delta_met_hi_vs_int = mean_score_Met_hi_EC - mean_score_Met_int_EC,
+    median_delta_met_hi_vs_int = median_score_Met_hi_EC - median_score_Met_int_EC
+  )
+
+ec_pathway_availability <- data.frame(
+  xenium_pathway = c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)", "Oxidative phosphorylation"),
+  available_in_ec_xenium_scmetabolism = c(
+    "Glycolysis / Gluconeogenesis",
+    "Citrate cycle (TCA cycle)",
+    "Oxidative phosphorylation"
+  ) %in% rownames(ec_scmetab_scores)
+)
+
+write.csv(
+  ec_scmetab_metlabel_scores,
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_cell_scores.csv"),
+  row.names = FALSE
+)
+write.csv(
+  ec_scmetab_metlabel_summary,
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_summary.csv"),
+  row.names = FALSE
+)
+write.csv(
+  ec_scmetab_metlabel_delta,
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_delta.csv"),
+  row.names = FALSE
+)
+write.csv(
+  ec_pathway_availability,
+  file.path(scmetab_output_dir, "scmetabolism_ec_pathway_availability.csv"),
+  row.names = FALSE
+)
+
+ec_scmetab_metlabel_summary
+```
+
+```{r scmetabolism_ec_energy_dotplot, fig.width=7.2, fig.height=3.8}
+ec_dot_labels <- c(
+  "Glycolysis / Gluconeogenesis" = "Glycolysis /\nGluconeogenesis",
+  "Citrate cycle (TCA cycle)" = "Citrate cycle\n(TCA cycle)",
+  "Oxidative phosphorylation" = "OXPHOS"
+)
+
+p_scmetab_ec_metlabel_dotplot_raw <- make_energy_dotplot(
+  summary_df = ec_scmetab_metlabel_summary,
+  group_col = "metEClabel",
+  group_levels = ec_met_levels,
+  pathway_levels = ec_energy_pathways,
+  pathway_labels = ec_dot_labels,
+  plot_title = "EC mean Glycolysis and TCA scores",
+  scale_by_column = FALSE
+)
+
+p_scmetab_ec_metlabel_dotplot_scaled <- make_energy_dotplot(
+  summary_df = ec_scmetab_metlabel_summary,
+  group_col = "metEClabel",
+  group_levels = ec_met_levels,
+  pathway_levels = ec_energy_pathways,
+  pathway_labels = ec_dot_labels,
+  plot_title = "EC mean Glycolysis and TCA scores - scaled by column",
+  scale_by_column = TRUE
+)
+
+p_scmetab_ec_metlabel_dotplot <- p_scmetab_ec_metlabel_dotplot_raw
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_dotplot.png"),
+  p_scmetab_ec_metlabel_dotplot_raw,
+  width = 7.2,
+  height = 3.8,
+  dpi = 300
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_dotplot_raw.png"),
+  p_scmetab_ec_metlabel_dotplot_raw,
+  width = 7.2,
+  height = 3.8,
+  dpi = 300
+)
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_dotplot_scaled_by_column.png"),
+  p_scmetab_ec_metlabel_dotplot_scaled,
+  width = 7.2,
+  height = 3.8,
+  dpi = 300
+)
+
+p_scmetab_ec_metlabel_dotplot_raw
+p_scmetab_ec_metlabel_dotplot_scaled
+```
+
+```{r scmetabolism_ec_energy_distribution_plots, fig.width=8.2, fig.height=4.8}
+p_scmetab_ec_metlabel_density <- ggplot(
+  ec_scmetab_metlabel_scores,
+  aes(x = score, fill = metEClabel, color = metEClabel)
+) +
+  geom_density(alpha = 0.36, linewidth = 0.8, adjust = 1.1) +
+  scale_fill_manual(values = c("Met_int_EC" = "#4E79A7", "Met_hi_EC" = "#E15759")) +
+  scale_color_manual(values = c("Met_int_EC" = "#2F5F8F", "Met_hi_EC" = "#B23B3F")) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free", labeller = labeller(pathway = ec_energy_display_labels)) +
+  labs(
+    title = "EC Glycolysis and TCA score distributions",
+    x = "scMetabolism AUCell score",
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_density.png"),
+  p_scmetab_ec_metlabel_density,
+  width = 8.2,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_ec_metlabel_density
+```
+
+```{r scmetabolism_ec_energy_dumbbell, fig.width=8, fig.height=3.8}
+ec_scmetab_metlabel_dumbbell <- ec_scmetab_metlabel_summary %>%
+  dplyr::filter(pathway %in% c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)")) %>%
+  dplyr::select(pathway, metEClabel, mean_score) %>%
+  tidyr::pivot_wider(names_from = metEClabel, values_from = mean_score) %>%
+  dplyr::mutate(pathway = factor(pathway, levels = rev(c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)"))))
+
+p_scmetab_ec_metlabel_dumbbell <- ggplot(ec_scmetab_metlabel_dumbbell) +
+  geom_segment(
+    aes(x = Met_int_EC, xend = Met_hi_EC, y = pathway, yend = pathway),
+    color = "grey55",
+    linewidth = 1.2
+  ) +
+  geom_point(aes(x = Met_int_EC, y = pathway), color = "#4E79A7", size = 4) +
+  geom_point(aes(x = Met_hi_EC, y = pathway), color = "#E15759", size = 4) +
+  scale_y_discrete(labels = ec_energy_display_labels) +
+  labs(
+    title = "EC mean Glycolysis and TCA scores by metEClabel",
+    subtitle = "Dumbbell view highlights Met_hi_EC versus Met_int_EC",
+    x = "Mean scMetabolism AUCell score",
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 11, face = "bold"),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_metEClabel_energy_dumbbell.png"),
+  p_scmetab_ec_metlabel_dumbbell,
+  width = 8,
+  height = 3.8,
+  dpi = 300
+)
+
+p_scmetab_ec_metlabel_dumbbell
+```
+
+## EC IMC vs Xenium Glycolysis and TCA scores
+
+```{r scmetabolism_ec_imc_xenium_correlation_data}
+ec_score_cols <- c("glycolysis_score", "tca_score", "hif1a_score", "nox4_score")
+
+ec_format_p <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "NA",
+    p < 0.001 ~ "<0.001",
+    TRUE ~ sprintf("%.3f", p)
+  )
+}
+
+ec_make_imc_score <- function(markers, assay_name = "zrescaled") {
+  markers <- intersect(markers, rownames(spe))
+  if (length(markers) == 0) {
+    return(rep(NA_real_, ncol(spe)))
+  }
+  colMeans(as.matrix(SummarizedExperiment::assay(spe, assay_name)[markers, , drop = FALSE]), na.rm = TRUE)
+}
+
+if (!all(ec_score_cols %in% colnames(SummarizedExperiment::colData(spe)))) {
+  spe$glycolysis_score <- ec_make_imc_score(c("GLUT1", "HK1", "PFKL1_PFKM", "PKM2", "LDHA", "GAPDH"))
+  spe$tca_score <- ec_make_imc_score(c("CS", "OGDH", "ATP5A", "SDHA"))
+  spe$hif1a_score <- ec_make_imc_score("HIF1a")
+  spe$nox4_score <- ec_make_imc_score("NOX4")
+}
+
+ec_df_sample <- as.data.frame(SummarizedExperiment::colData(spe)[, c("sample_id", "metEClabel", ec_score_cols)]) %>%
+  dplyr::filter(metEClabel %in% ec_met_levels) %>%
+  dplyr::group_by(sample_id, metEClabel) %>%
+  dplyr::summarise(dplyr::across(dplyr::all_of(ec_score_cols), mean, na.rm = TRUE), .groups = "drop")
+
+ec_df_cell <- as.data.frame(SummarizedExperiment::colData(spe)[, c("sample_id", "metEClabel", ec_score_cols)]) %>%
+  dplyr::mutate(
+    KEY = colnames(spe),
+    sample_id = as.character(sample_id),
+    metEClabel = as.character(metEClabel),
+    .before = 1
+  ) %>%
+  dplyr::filter(
+    metEClabel %in% ec_met_levels,
+    !is.na(KEY),
+    KEY != ""
+  ) %>%
+  dplyr::distinct(KEY, .keep_all = TRUE)
+
+ec_xenium_sample_candidates <- intersect(
+  c("SampleID", "sample_id", "SampleId", "Patient", "ROI"),
+  colnames(ec_xenium_scmetab@meta.data)
+)
+
+ec_xenium_sample_overlap <- vapply(
+  ec_xenium_sample_candidates,
+  function(sample_col) {
+    cur_values <- as.character(ec_xenium_scmetab@meta.data[[sample_col]])
+    cur_values <- cur_values[!is.na(cur_values) & cur_values != "" & cur_values != "not found"]
+    length(intersect(unique(ec_df_sample$sample_id), unique(cur_values)))
+  },
+  numeric(1)
+)
+
+ec_xenium_correlation_sample_col <- names(which.max(ec_xenium_sample_overlap))
+
+if (length(ec_xenium_correlation_sample_col) == 0 || is.na(ec_xenium_correlation_sample_col)) {
+  ec_xenium_correlation_sample_col <- "sample_id"
+}
+
+ec_xenium_cell_key_col <- if ("KEY" %in% colnames(ec_xenium_scmetab@meta.data)) "KEY" else "cell"
+
+ec_correlation_pathways <- intersect(
+  c("Glycolysis / Gluconeogenesis", "Citrate cycle (TCA cycle)"),
+  rownames(ec_scmetab_scores)
+)
+
+ec_xenium_correlation_cells <- make_scmetabolism_ec_cell_df(
+  score_matrix = ec_scmetab_scores,
+  meta_data = ec_xenium_scmetab@meta.data,
+  pathways = ec_correlation_pathways
+) %>%
+  dplyr::mutate(
+    sample_id = as.character(ec_xenium_scmetab@meta.data[cell, ec_xenium_correlation_sample_col, drop = TRUE]),
+    metEClabel = as.character(metEClabel),
+    xenium_cell_key = if (ec_xenium_cell_key_col %in% colnames(ec_xenium_scmetab@meta.data)) {
+      as.character(ec_xenium_scmetab@meta.data[cell, ec_xenium_cell_key_col, drop = TRUE])
+    } else {
+      as.character(cell)
+    },
+    xenium_score_name = dplyr::case_when(
+      pathway == "Glycolysis / Gluconeogenesis" ~ "xenium_glycolysis_score",
+      pathway == "Citrate cycle (TCA cycle)" ~ "xenium_tca_score",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(
+    !is.na(xenium_score_name),
+    !is.na(sample_id),
+    sample_id != "",
+    sample_id != "not found",
+    !is.na(xenium_cell_key),
+    xenium_cell_key != "",
+    !is.na(metEClabel)
+  )
+
+ec_xenium_sample_scores <- ec_xenium_correlation_cells %>%
+  dplyr::group_by(sample_id, metEClabel, xenium_score_name) %>%
+  dplyr::summarise(xenium_score = mean(score, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = xenium_score_name, values_from = xenium_score)
+
+ec_scmetab_imc_xenium_joined <- ec_df_sample %>%
+  dplyr::inner_join(ec_xenium_sample_scores, by = c("sample_id", "metEClabel"))
+
+ec_scmetab_imc_xenium_cor_long <- dplyr::bind_rows(
+  ec_scmetab_imc_xenium_joined %>%
+    dplyr::transmute(
+      sample_id,
+      metEClabel,
+      comparison = "Glycolysis",
+      imc_score = glycolysis_score,
+      xenium_score = xenium_glycolysis_score
+    ),
+  ec_scmetab_imc_xenium_joined %>%
+    dplyr::transmute(
+      sample_id,
+      metEClabel,
+      comparison = "TCA",
+      imc_score = tca_score,
+      xenium_score = xenium_tca_score
+    )
+) %>%
+  dplyr::filter(!is.na(imc_score), !is.na(xenium_score)) %>%
+  dplyr::mutate(
+    comparison = factor(comparison, levels = c("Glycolysis", "TCA")),
+    metEClabel = factor(as.character(metEClabel), levels = ec_met_levels)
+  )
+
+ec_xenium_cell_scores <- ec_xenium_correlation_cells %>%
+  dplyr::select(
+    xenium_cell_key,
+    cell,
+    sample_id,
+    metEClabel,
+    xenium_score_name,
+    score
+  ) %>%
+  dplyr::distinct(xenium_cell_key, xenium_score_name, .keep_all = TRUE) %>%
+  tidyr::pivot_wider(names_from = xenium_score_name, values_from = score)
+
+ec_scmetab_imc_xenium_cell_joined <- ec_df_cell %>%
+  dplyr::inner_join(ec_xenium_cell_scores, by = c("KEY" = "xenium_cell_key"), suffix = c("_imc", "_xenium")) %>%
+  dplyr::mutate(
+    sample_id = dplyr::coalesce(sample_id_xenium, sample_id_imc),
+    metEClabel = dplyr::coalesce(metEClabel_xenium, metEClabel_imc),
+    metEClabel_match = metEClabel_imc == metEClabel_xenium
+  ) %>%
+  dplyr::filter(!is.na(metEClabel), metEClabel %in% ec_met_levels)
+
+ec_cell_correlation_specs <- data.frame(
+  comparison = c("Glycolysis", "TCA"),
+  imc_col = c("glycolysis_score", "tca_score"),
+  xenium_col = c("xenium_glycolysis_score", "xenium_tca_score"),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::filter(imc_col %in% colnames(ec_scmetab_imc_xenium_cell_joined), xenium_col %in% colnames(ec_scmetab_imc_xenium_cell_joined))
+
+if (nrow(ec_cell_correlation_specs) > 0) {
+  ec_scmetab_imc_xenium_cell_cor_long <- dplyr::bind_rows(
+    lapply(seq_len(nrow(ec_cell_correlation_specs)), function(i) {
+      cur_spec <- ec_cell_correlation_specs[i, ]
+      ec_scmetab_imc_xenium_cell_joined %>%
+        dplyr::transmute(
+          KEY,
+          cell,
+          sample_id,
+          metEClabel,
+          metEClabel_match,
+          comparison = cur_spec$comparison,
+          imc_score = .data[[cur_spec$imc_col]],
+          xenium_score = .data[[cur_spec$xenium_col]]
+        )
+    })
+  ) %>%
+    dplyr::filter(!is.na(imc_score), !is.na(xenium_score)) %>%
+    dplyr::mutate(
+      comparison = factor(comparison, levels = ec_cell_correlation_specs$comparison),
+      metEClabel = factor(as.character(metEClabel), levels = ec_met_levels)
+    )
+} else {
+  ec_scmetab_imc_xenium_cell_cor_long <- tibble::tibble(
+    KEY = character(),
+    cell = character(),
+    sample_id = character(),
+    metEClabel = factor(character(), levels = ec_met_levels),
+    metEClabel_match = logical(),
+    comparison = factor(character(), levels = character()),
+    imc_score = numeric(),
+    xenium_score = numeric()
+  )
+}
+
+ec_cor_test_one <- function(x, y, method = "spearman") {
+  if (length(stats::complete.cases(x, y)) < 3 || sum(stats::complete.cases(x, y)) < 3) {
+    return(c(estimate = NA_real_, p.value = NA_real_))
+  }
+  res <- suppressWarnings(stats::cor.test(x, y, method = method, exact = FALSE))
+  c(estimate = unname(res$estimate), p.value = res$p.value)
+}
+
+ec_scmetab_imc_xenium_cor_stats <- ec_scmetab_imc_xenium_cor_long %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    spearman_rho = ec_cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = ec_cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = ec_cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = ec_cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    label = paste0(
+      "Spearman rho=", sprintf("%.2f", spearman_rho),
+      "\np=", ec_format_p(spearman_p),
+      "\nn=", n
+    )
+  )
+
+ec_scmetab_imc_xenium_cell_cor_stats_overall <- ec_scmetab_imc_xenium_cell_cor_long %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    stratum = "All matched cells",
+    n = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id),
+    spearman_rho = ec_cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = ec_cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = ec_cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = ec_cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  )
+
+ec_scmetab_imc_xenium_cell_cor_stats_by_label <- ec_scmetab_imc_xenium_cell_cor_long %>%
+  dplyr::group_by(comparison, metEClabel) %>%
+  dplyr::summarise(
+    stratum = as.character(dplyr::first(metEClabel)),
+    n = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id),
+    spearman_rho = ec_cor_test_one(imc_score, xenium_score, "spearman")["estimate"],
+    spearman_p = ec_cor_test_one(imc_score, xenium_score, "spearman")["p.value"],
+    pearson_r = ec_cor_test_one(imc_score, xenium_score, "pearson")["estimate"],
+    pearson_p = ec_cor_test_one(imc_score, xenium_score, "pearson")["p.value"],
+    .groups = "drop"
+  )
+
+ec_scmetab_imc_xenium_cell_cor_stats <- dplyr::bind_rows(
+  ec_scmetab_imc_xenium_cell_cor_stats_overall,
+  ec_scmetab_imc_xenium_cell_cor_stats_by_label
+) %>%
+  dplyr::mutate(
+    label = paste0(
+      "rho=", sprintf("%.2f", spearman_rho),
+      "\np=", ec_format_p(spearman_p),
+      "\nn=", n
+    )
+  )
+
+ec_scmetab_imc_xenium_sample_key_overlap <- data.frame(
+  xenium_sample_column = names(ec_xenium_sample_overlap),
+  n_matching_imc_sample_ids = as.integer(ec_xenium_sample_overlap),
+  selected = names(ec_xenium_sample_overlap) == ec_xenium_correlation_sample_col
+)
+
+ec_scmetab_imc_xenium_cell_key_overlap <- data.frame(
+  xenium_cell_key_column = ec_xenium_cell_key_col,
+  n_imc_cells_with_key = dplyr::n_distinct(ec_df_cell$KEY),
+  n_xenium_cells_with_key = dplyr::n_distinct(ec_xenium_cell_scores$xenium_cell_key),
+  n_matched_cells = dplyr::n_distinct(ec_scmetab_imc_xenium_cell_joined$KEY),
+  n_matched_cell_pathway_pairs = nrow(ec_scmetab_imc_xenium_cell_cor_long)
+)
+
+write.csv(ec_df_sample, file.path(scmetab_output_dir, "scmetabolism_ec_imc_metEClabel_sample_scores.csv"), row.names = FALSE)
+write.csv(ec_df_cell, file.path(scmetab_output_dir, "scmetabolism_ec_imc_metEClabel_cell_scores.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_joined, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_sample_joined.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cell_joined, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_joined.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cor_long, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_correlation_long.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cell_cor_long, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_correlation_long.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cor_stats, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_correlation_stats.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cell_cor_stats, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_correlation_stats.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_sample_key_overlap, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_sample_key_overlap.csv"), row.names = FALSE)
+write.csv(ec_scmetab_imc_xenium_cell_key_overlap, file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_key_overlap.csv"), row.names = FALSE)
+
+dplyr::bind_rows(
+  ec_scmetab_imc_xenium_cor_stats %>% dplyr::mutate(level = "sample"),
+  ec_scmetab_imc_xenium_cell_cor_stats_overall %>% dplyr::mutate(level = "single_cell")
+)
+```
+
+```{r scmetabolism_ec_imc_xenium_sample_correlation_plot, fig.width=8.5, fig.height=4.8}
+if (nrow(ec_scmetab_imc_xenium_cor_long) > 0) {
+  p_scmetab_ec_imc_xenium_correlation <- ggplot(
+    ec_scmetab_imc_xenium_cor_long,
+    aes(x = imc_score, y = xenium_score, color = metEClabel)
+  ) +
+    geom_point(size = 3, alpha = 0.9) +
+    geom_smooth(method = "lm", se = FALSE, color = "grey35", linewidth = 0.7) +
+    geom_text(
+      data = ec_scmetab_imc_xenium_cor_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.3
+    ) +
+    scale_color_manual(values = c("Met_int_EC" = "#4E79A7", "Met_hi_EC" = "#E15759")) +
+    facet_wrap(~ comparison, nrow = 1, scales = "free") +
+    labs(
+      title = "EC IMC marker-score vs Xenium scMetabolism score",
+      subtitle = paste0("Aggregated by IMC sample_id and Xenium ", ec_xenium_correlation_sample_col, " + metEClabel"),
+      x = "IMC mean score",
+      y = "Xenium mean scMetabolism AUCell score",
+      color = NULL
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "top",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_ec_imc_xenium_correlation <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping EC IMC/Xenium sample_id + metEClabel groups found.\n",
+        "Selected Xenium sample column: ", ec_xenium_correlation_sample_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "EC IMC marker-score vs Xenium scMetabolism score")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_correlation.png"),
+  p_scmetab_ec_imc_xenium_correlation,
+  width = 8.5,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_ec_imc_xenium_correlation
+```
+
+```{r scmetabolism_ec_imc_xenium_cell_correlation_density_plot, fig.width=8.5, fig.height=6.2}
+ec_cell_correlation_plot_stats <- ec_scmetab_imc_xenium_cell_cor_stats %>%
+  dplyr::filter(!is.na(metEClabel)) %>%
+  dplyr::mutate(
+    metEClabel = factor(as.character(metEClabel), levels = ec_met_levels),
+    comparison = factor(as.character(comparison), levels = levels(ec_scmetab_imc_xenium_cell_cor_long$comparison))
+  )
+
+if (nrow(ec_scmetab_imc_xenium_cell_cor_long) > 0) {
+  p_scmetab_ec_imc_xenium_cell_density <- ggplot(
+    ec_scmetab_imc_xenium_cell_cor_long,
+    aes(x = imc_score, y = xenium_score)
+  ) +
+    geom_bin2d(bins = 45) +
+    geom_smooth(method = "lm", se = FALSE, color = "grey15", linewidth = 0.55) +
+    geom_text(
+      data = ec_cell_correlation_plot_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.1
+    ) +
+    scale_fill_gradient(low = "grey94", high = "#B23B3F", trans = "sqrt", name = "Cells") +
+    facet_grid(metEClabel ~ comparison, scales = "free") +
+    labs(
+      title = "EC single-cell matched IMC marker score vs Xenium scMetabolism score",
+      subtitle = paste0("Joined by ", ec_xenium_cell_key_col, "; binned cells, statistics from all matched cells"),
+      x = "IMC single-cell marker score",
+      y = "Xenium single-cell scMetabolism AUCell score"
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_ec_imc_xenium_cell_density <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping EC IMC/Xenium cells found.\n",
+        "Selected Xenium cell key column: ", ec_xenium_cell_key_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "EC single-cell matched IMC marker score vs Xenium scMetabolism score")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_correlation_density.png"),
+  p_scmetab_ec_imc_xenium_cell_density,
+  width = 8.5,
+  height = 6.2,
+  dpi = 300
+)
+
+p_scmetab_ec_imc_xenium_cell_density
+```
+
+```{r scmetabolism_ec_imc_xenium_cell_correlation_point_plot, fig.width=8.5, fig.height=4.8}
+ec_cell_point_limit <- 40000
+
+if (nrow(ec_scmetab_imc_xenium_cell_cor_long) > 0) {
+  set.seed(1)
+  ec_cell_point_data <- ec_scmetab_imc_xenium_cell_cor_long %>%
+    dplyr::group_by(comparison, metEClabel) %>%
+    dplyr::group_modify(function(.x, .y) {
+      if (nrow(.x) > ec_cell_point_limit) {
+        dplyr::slice_sample(.x, n = ec_cell_point_limit)
+      } else {
+        .x
+      }
+    }) %>%
+    dplyr::ungroup()
+
+  ec_cell_point_subtitle <- if (nrow(ec_cell_point_data) < nrow(ec_scmetab_imc_xenium_cell_cor_long)) {
+    paste0("Up to ", ec_cell_point_limit, " cells per facet plotted; statistics use all matched cells")
+  } else {
+    "All matched cells plotted and used for statistics"
+  }
+
+  p_scmetab_ec_imc_xenium_cell_points <- ggplot(
+    ec_cell_point_data,
+    aes(x = imc_score, y = xenium_score, color = metEClabel)
+  ) +
+    geom_point(alpha = 0.2, size = 0.55, stroke = 0) +
+    geom_smooth(
+      data = ec_scmetab_imc_xenium_cell_cor_long,
+      method = "lm",
+      se = FALSE,
+      linewidth = 0.65,
+      alpha = 0.8
+    ) +
+    geom_text(
+      data = ec_scmetab_imc_xenium_cell_cor_stats_overall %>%
+        dplyr::mutate(
+          label = paste0(
+            "rho=", sprintf("%.2f", spearman_rho),
+            "\np=", ec_format_p(spearman_p),
+            "\nn=", n
+          ),
+          comparison = factor(as.character(comparison), levels = levels(ec_scmetab_imc_xenium_cell_cor_long$comparison))
+        ),
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.05,
+      vjust = 1.08,
+      size = 3.2
+    ) +
+    scale_color_manual(values = c("Met_int_EC" = "#4E79A7", "Met_hi_EC" = "#E15759")) +
+    facet_wrap(~ comparison, nrow = 1, scales = "free") +
+    labs(
+      title = "EC single-cell IMC-Xenium correlation point cloud",
+      subtitle = ec_cell_point_subtitle,
+      x = "IMC single-cell marker score",
+      y = "Xenium single-cell scMetabolism AUCell score",
+      color = NULL
+    ) +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "top",
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+} else {
+  p_scmetab_ec_imc_xenium_cell_points <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = paste0(
+        "No overlapping EC IMC/Xenium cells found.\n",
+        "Selected Xenium cell key column: ", ec_xenium_cell_key_col
+      ),
+      size = 5
+    ) +
+    theme_void() +
+    labs(title = "EC single-cell IMC-Xenium correlation point cloud")
+}
+
+ggsave(
+  file.path(scmetab_output_dir, "scmetabolism_ec_imc_xenium_cell_correlation_points.png"),
+  p_scmetab_ec_imc_xenium_cell_points,
+  width = 8.5,
+  height = 4.8,
+  dpi = 300
+)
+
+p_scmetab_ec_imc_xenium_cell_points
+```

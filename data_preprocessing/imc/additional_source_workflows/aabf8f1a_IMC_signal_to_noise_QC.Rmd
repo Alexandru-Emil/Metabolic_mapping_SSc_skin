@@ -1,0 +1,321 @@
+---
+title: "IMC final-panel signal-to-noise quality control"
+subtitle: "First and second cohorts"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    number_sections: false
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+report_dir <- normalizePath(
+  dirname(knitr::current_input(dir = TRUE)),
+  winslash = "/",
+  mustWork = FALSE
+)
+output_dir <- file.path(report_dir, "outputs")
+plot_dir <- file.path(output_dir, "plots")
+table_dir <- file.path(output_dir, "tables")
+
+global_snr <- read.csv(file.path(table_dir, "global_marker_snr.csv"), check.names = FALSE)
+sample_snr <- read.csv(file.path(table_dir, "per_sample_marker_snr.csv"), check.names = FALSE)
+cohort_summary <- read.csv(file.path(table_dir, "cohort_snr_summary.csv"), check.names = FALSE)
+source_manifest <- read.csv(file.path(table_dir, "source_manifest.csv"), check.names = FALSE)
+shared_snr <- read.csv(file.path(table_dir, "cross_cohort_shared_marker_snr.csv"), check.names = FALSE)
+diagnostics <- read.csv(file.path(table_dir, "mixture_fit_diagnostics.csv"), check.names = FALSE)
+
+rho <- suppressWarnings(cor(
+  shared_snr[["log2_snr__First cohort"]],
+  shared_snr[["log2_snr__Second cohort"]],
+  method = "spearman",
+  use = "complete.obs"
+))
+
+figure_link <- function(stem, alt) {
+  png <- file.path("outputs", "plots", paste0(stem, ".png"))
+  pdf <- file.path("outputs", "plots", paste0(stem, ".pdf"))
+  svg <- file.path("outputs", "plots", paste0(stem, ".svg"))
+  cat(
+    sprintf(
+      "<p><a href='%s'>PDF</a> | <a href='%s'>SVG</a></p><img src='%s' alt='%s' style='width:100%%;height:auto;'>",
+      pdf, svg, png, alt
+    )
+  )
+}
+```
+
+# Purpose
+
+This report quantitatively documents signal-to-noise characteristics of the
+final IMC antibody panels in both cohorts. It follows the **cell-level**
+quality-control strategy in the
+[Bodenmiller-group IMCDataAnalysis workflow](https://bodenmillergroup.github.io/IMCDataAnalysis/image-and-cell-level-quality-control.html):
+
+\[
+\mathrm{SNR} =
+\frac{\mathrm{mean\ intensity\ of\ the\ higher\ component}}
+{\mathrm{mean\ intensity\ of\ the\ lower\ component}}
+\]
+
+For each antibody and cohort, a two-component Gaussian mixture was fitted to
+the `asinh`-transformed segmented-cell mean intensities. The component with
+the higher mean in the untransformed `counts` assay was designated **signal**;
+the lower component was designated **empirical background/noise**. Component
+means and SNR were calculated on the untransformed intensities.
+
+This is a complementary quantitative summary of final-dilution staining. It
+does not replace the serial-dilution experiments, expected-compartment review,
+or direct inspection of raw images. Here, "background" means the lower
+single-cell intensity component, not acellular optical background.
+
+# Input data
+
+```{r input-table}
+knitr::kable(
+  source_manifest,
+  row.names = FALSE,
+  caption = "Finalized SpatialExperiment objects used for signal-to-noise QC"
+)
+```
+
+Technical channels (`Ar`, iodine/xenon/barium background channels, iridium
+DNA intercalators, image-cell segmentation kit channels, lead, and the
+unlabelled first-cohort bismuth channel) were excluded. Histone H3 was
+retained. The second-cohort-only TCF21 channel remains in the mixture-fit
+audit and source tables for provenance but is omitted from all displayed
+figures.
+
+# Results
+
+```{r cohort-summary}
+display_summary <- cohort_summary
+numeric_cols <- vapply(display_summary, is.numeric, logical(1))
+display_summary[numeric_cols] <- lapply(
+  display_summary[numeric_cols],
+  function(x) round(x, 3)
+)
+knitr::kable(
+  display_summary,
+  row.names = FALSE,
+  caption = "Cohort-level summary of final antibody-channel mixture fits"
+)
+```
+
+The cohort-level table includes TCF21 among the 37 second-cohort antibody
+fits; the plotted second-cohort panel contains the remaining 36 channels.
+
+All `r sum(cohort_summary$n_antibody_channels)` cohort-specific antibody
+mixtures were evaluated. The cross-cohort rank correlation across the
+`r nrow(shared_snr)` shared antibodies was Spearman
+\(\rho = `r sprintf("%.2f", rho)`\). Because the panels were stained and
+acquired separately, this correlation is a consistency check rather than an
+assay-equivalence test.
+
+**Recommended figure use.** The signal-intensity-versus-SNR plot below is the
+stronger primary quantitative panel for the Methods and reviewer response. It
+shows both quantities used in the QC argument for every antibody and cohort,
+without imposing a pass/fail boundary. The per-sample interval plot is best
+used as supporting evidence that the estimated SNR was reasonably consistent
+across acquired samples.
+
+## Manuscript-ready Figure S2
+
+The combined file below was exported directly at 7.1 inches, corresponding to
+the full A4 manuscript width. Its typography and spacing are therefore set for
+the assembled figure rather than for a full-width report plot that is later
+reduced. Separate half-width vector panels are also available.
+
+```{r fig-s2, results='asis'}
+figure_link(
+  "figure_S2_manuscript_combined",
+  "Manuscript-ready Figure S2 showing signal intensity, SNR, and empirical background"
+)
+```
+
+Panel A: [PDF](outputs/plots/figure_S2A_manuscript_signal_vs_snr.pdf) |
+[SVG](outputs/plots/figure_S2A_manuscript_signal_vs_snr.svg)
+
+Panel B: [PDF](outputs/plots/figure_S2B_manuscript_signal_background.pdf) |
+[SVG](outputs/plots/figure_S2B_manuscript_signal_background.svg)
+
+### Figure legend
+
+**Figure S2. Signal intensity and signal-to-noise characteristics of the final
+IMC antibody panels.** **A,** Each filled point represents one antibody channel
+in the first IMC cohort (blue) or second IMC cohort (orange). For each antibody
+and cohort, a two-component Gaussian mixture model was fitted to
+asinh-transformed segmented-cell mean intensities. The component with the
+higher mean untransformed intensity was designated signal and the
+lower-intensity component empirical background/noise. The x-axis shows the
+log2-transformed mean signal intensity and the y-axis the log2-transformed
+signal-to-noise ratio (SNR), calculated from the untransformed counts assay as
+mean signal intensity divided by mean background intensity. Every antibody
+channel is shown and labeled. **B,** Open and filled points show the lower- and
+higher-intensity component means, respectively, on the log2 scale; connecting
+lines show their separation for each antibody, with the complete antibody list
+displayed on the y-axis. The second-cohort-only TCF21 channel is omitted from
+the displayed panels but retained in the QC source tables. No fixed numerical
+acceptance threshold was applied; these quantitative summaries were evaluated
+together with expected compartmental localization and visual assessment of
+staining quality in the raw images.
+
+## Signal intensity versus SNR {.tabset}
+
+### Figure
+
+```{r fig1, results='asis'}
+figure_link(
+  "figure_1_reference_style_signal_vs_snr",
+  "Signal intensity versus signal-to-noise ratio for both IMC cohorts"
+)
+```
+
+### Interpretation
+
+Each filled point represents one antibody; the cohorts are displayed in
+separate panels. No numerical acceptance boundary is drawn because no
+universal SNR or signal-intensity cutoff was applied. Low-abundance markers can
+remain specific and useful, so final acceptance also depended on expected
+spatial localization and visual review.
+
+## Signal and empirical background
+
+```{r fig3, results='asis'}
+figure_link(
+  "figure_3_signal_background_dumbbell",
+  "Signal and empirical background component means for each antibody"
+)
+```
+
+This view directly displays the separation between the lower and higher
+single-cell intensity components. It is a useful mechanistic companion to the
+primary plot because the numerator and denominator of SNR remain visible.
+
+## Consistency across samples
+
+```{r fig2, results='asis'}
+figure_link(
+  "figure_2_per_sample_snr_intervals",
+  "Median and interquartile range of signal-to-noise ratios across samples"
+)
+```
+
+For each marker, the cohort-wide mixture classification was applied to each
+sample and SNR was recalculated from that sample's untransformed intensities.
+Only sample-marker combinations with at least 20 cells in each component were
+included in the interval summary.
+
+## Per-sample heatmaps {.tabset}
+
+### First cohort
+
+```{r fig4a, results='asis'}
+figure_link(
+  "figure_4a_first_cohort_sample_snr_heatmap",
+  "First cohort per-sample signal-to-noise heatmap"
+)
+```
+
+### Second cohort
+
+```{r fig4b, results='asis'}
+figure_link(
+  "figure_4b_second_cohort_sample_snr_heatmap",
+  "Second cohort per-sample signal-to-noise heatmap"
+)
+```
+
+Both heatmaps use the same full, unclipped color range. Gray entries indicate
+that one fitted component contained fewer than 20 cells in that sample and
+was therefore not treated as a stable sample-specific estimate.
+
+## Cross-cohort concordance
+
+```{r fig5, results='asis'}
+figure_link(
+  "figure_5_cross_cohort_snr_concordance",
+  "Cross-cohort concordance of shared antibody signal-to-noise ratios"
+)
+```
+
+# Suggested manuscript wording
+
+## Response letter
+
+> A good signal-to-background ratio was not defined by a single universal
+> numerical cutoff. Antibodies were first evaluated by conventional
+> immunofluorescence on FFPE skin sections across serial dilutions and were
+> retained only when they showed the expected compartmental staining pattern
+> and signal clearly distinguishable from background by visual inspection.
+> Metal-conjugated antibodies were then retested by IMC on consecutive FFPE
+> sections across serial dilutions to select the final concentration. As
+> quantitative documentation of the final IMC panels, we additionally followed
+> a published cell-level IMC quality-control approach. For each antibody and
+> cohort, a two-component Gaussian mixture was fitted to asinh-transformed
+> segmented-cell mean intensities. The higher-intensity component was treated
+> as signal and the lower-intensity component as empirical background/noise;
+> SNR was calculated from untransformed intensities as the ratio of their mean
+> values. Signal-intensity-SNR plots and per-sample summaries were reviewed
+> together with spatial staining patterns. This quantitative metric supported,
+> but did not replace, visual assessment because low-abundance yet specific
+> markers may not be appropriately judged by a fixed SNR threshold.
+
+## Methods
+
+> For IMC validation, antibody channels were reviewed for expected spatial
+> distribution, consistency across serial sections, and acceptable
+> signal-to-background characteristics. For quantitative quality control of
+> the final panels, a two-component Gaussian mixture model was fitted
+> separately for each antibody and cohort to asinh-transformed segmented-cell
+> mean intensities. The component with the higher untransformed mean intensity
+> was designated signal and the lower component empirical background/noise,
+> and SNR was calculated as mean signal intensity divided by mean background
+> intensity. Signal-intensity-SNR plots and per-sample summaries were inspected
+> together with the raw images. No universal SNR cutoff was applied; final
+> channel acceptance also required the expected compartmental localization
+> and consistent staining quality.
+
+# Important scope note
+
+The first cohort retains multichannel TIFF stacks and masks, but equivalent
+raw TIFF stacks for the second cohort were not found alongside the finalized
+analysis files. A pixel-level Otsu SNR could therefore be added for the first
+cohort, but it should not replace the matched cell-level figures above unless
+the second-cohort raw stacks are recovered. Mixing first-cohort pixel SNR with
+second-cohort cell-level SNR would compare different quantities.
+
+# Reproducibility
+
+The source tables are provided in `outputs/tables`; all plots are exported as
+PDF, SVG, and high-resolution PNG. The calculation script is
+`compute_imc_signal_to_noise_qc.R`.
+
+```{r diagnostics-table}
+flagged <- diagnostics[
+  diagnostics$fit_status != "ok" |
+    diagnostics$component_size_flag,
+]
+if (nrow(flagged)) {
+  flagged_show <- flagged[, c(
+    "cohort", "marker", "fit_status", "n_signal", "n_background",
+    "fraction_signal", "signal_mean", "background_mean", "snr",
+    "component_size_flag"
+  )]
+  numeric_cols <- vapply(flagged_show, is.numeric, logical(1))
+  flagged_show[numeric_cols] <- lapply(
+    flagged_show[numeric_cols],
+    function(x) round(x, 3)
+  )
+  knitr::kable(
+    flagged_show,
+    row.names = FALSE,
+    caption = "Mixture fits requiring cautious interpretation"
+  )
+} else {
+  cat("No cohort-level mixture fits met the prespecified diagnostic flags.")
+}
+```

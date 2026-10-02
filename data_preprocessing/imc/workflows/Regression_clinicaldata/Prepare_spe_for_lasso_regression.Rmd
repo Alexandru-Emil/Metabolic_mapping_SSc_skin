@@ -1,0 +1,130 @@
+---
+title: "Heatmap regression models clinical data"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE, root.dir = here::here())
+
+```
+
+```{r timestamp, eval=TRUE}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+
+# Load spe
+
+```{r load spe, eval=TRUE}
+spe <- readRDS(here("Datasets/spe20250127174306.rds"))
+```
+
+# Prepare spe for analysis
+
+```{r prep spe, eval=TRUE}
+
+# Create a new data frame with all the colData of the spe object - to recode the patient_id column
+
+metadata <- colData(spe)
+
+# add a new column to metadata called Donor where you recode the patient_id column
+# the elements starting with NH should be called Healthy1, Healthy2, etc.
+# the elements starting with SSc should be called SSc1, SSc2, etc.
+metadata$Donor <- dplyr::recode(
+  metadata$patient_id,
+  Healthy1 = "Healthy1",
+  Healthy2 = "Healthy2",
+  SSc1 = "SSc1",
+  SSc2 = "SSc2",
+  SSc3 = "SSc3",
+  SSc4 = "SSc4",
+  SSc5 = "SSc5",
+  SSc6 = "SSc6",
+  SSc7 = "SSc7",
+  SSc8 = "SSc8",
+  Healthy3 = "Healthy3",
+  Healthy4 = "Healthy4",
+  SSc9 = "SSc9",
+  Healthy5 = "Healthy5",
+  Healthy6 = "Healthy6",
+  Healthy7 = "Healthy7"
+)
+
+
+metadata$Disease <- dplyr::recode(metadata$indication, NH = "Healthy", SSc =
+                                    "SSc")
+
+# Assign the new columns in metadata to the spe object
+spe$Donor <- metadata$Donor
+spe$Disease <- metadata$Disease
+
+# Verify the assignment
+unique(spe$Donor)
+unique(spe$Disease)
+
+coldata_df_hasNeigh <- spe$hasNeigh_df
+for (i in colnames(coldata_df_hasNeigh)) {
+  spe[[i]] <- coldata_df_hasNeigh[[i]]
+}
+
+```
+
+
+# Create new columns with combinations of cell type and has neighbours
+
+```{r new columns, cache=FALSE, eval=TRUE}
+
+coldata_df_hasNeigh <- coldata_df_hasNeigh %>% select(!starts_with("has_CD45_CD3"))
+
+for (neigh_var in names(coldata_df_hasNeigh)) {
+  has_x_neigh <- sub("^has_", "with_", neigh_var)
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]] <- NA
+  
+  # For those fibroblasts that have the specific neighbour:
+  spe[[paste0("pheno_clusters_new2_",neigh_var)]][spe[[neigh_var]] == has_x_neigh] <- paste0(spe[["pheno_clusters_new2"]][spe[[neigh_var]] == has_x_neigh], "_", has_x_neigh)
+  
+  # For those that do not have this neighbour, optionally mark them differently:
+  # spe[["celltype_has_neigh"]][spe[[neigh_var]] != has_x_neigh] <- paste0(spe[["lv3.anno_bank"]][spe[[neigh_var]] != has_x_neigh], "_no_", has_x_neigh)
+}
+
+```
+
+# Save spe
+
+```{r save spe, eval=TRUE}
+
+saveRDS(spe, paste0(here("Datasets"),"/spe",ts,".rds"))
+
+```
+
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. A new spe with merged columns celltype-has_neighbours. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

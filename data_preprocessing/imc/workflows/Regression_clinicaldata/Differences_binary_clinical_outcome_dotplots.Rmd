@@ -1,0 +1,228 @@
+---
+title: "Differences in a binary clinical outcome as dotplots"
+author: "Alex Matei"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    df_print: paged
+    code_folding: hide
+---
+
+# Setup
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+
+library(here)
+source("data_preprocessing/common/original_setup.R")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE, root.dir = here::here())
+
+```
+
+```{r timestamp, eval=TRUE}
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+
+cat("This document was created with the time stamp",ts)
+```
+Import the datasets created with the RMarkdown `Clinicaldata_tables.Rmd` (export firstly the Datatable outputs as .csv files and save them in `r here("Datasets")`).
+
+# Load datasets
+
+```{r load datasets, eval=TRUE}
+df <- read.csv(here("Datasets/dif_prog_hasneigh.csv"), stringsAsFactors = FALSE)
+```
+
+# Prepare datasets for analysis
+
+```{r prep datasets, eval=TRUE}
+
+df$label2 <- recode(
+  df$label,
+  "with_CD31_1_neigh" = "Met<sup>low</sup>_EC",
+  "with_CD31_2_neigh" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_EC",
+  "with_CD31_3_neigh" = "Met<sup>hi</sup>_EC",
+  "with_CD31_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "with_CD31_5_neigh" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "with_CD45_CD68_1_neigh" = "Met<sup>hi</sup>_Mf",
+  "with_CD45_CD68_2_neigh" = "Met<sup>low</sup>_Mf",
+  "with_CD45_CD68_3_neigh" = "Glycolysis<sup>low</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_CD45_CD68_4_neigh" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_stromal_1_neigh" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_2_neigh" = "Met<sup>hi</sup>_Fib",
+  "with_stromal_3_neigh" = "TCA/OXPHOS<sup>int</sup>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "with_stromal_5_neigh" = "Met<sup>low</sup>_Fib",
+  "with_stromal_6_neigh" = "Glycolysis<sup>int</sup>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "with_stromal_7_neigh" = "Glut<sup>hi</sup>_Fib",
+  "with_stromal_8_neigh" = "Glycolysis<sup>int</sup>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+
+df$cluster_var2 <- recode(
+  df$cluster_var,
+  "CD31_1" = "Met<sup>low</sup>_EC",
+  "CD31_2" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_EC",
+  "CD31_3" = "Met<sup>hi</sup>_EC",
+  "CD31_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "CD31_5" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "CD45_CD68_1" = "Met<sup>hi</sup>_Mf",
+  "CD45_CD68_2" = "Met<sup>low</sup>_Mf",
+  "CD45_CD68_3" = "Glycolysis<sup>low</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "CD45_CD68_4" = "Glycolysis<sup>hi</sup>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "stromal_1" = "TCA/OXPHOS<sup>hi</sup>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_2" = "Met<sup>hi</sup>_Fib",
+  "stromal_3" = "TCA/OXPHOS<sup>int</sup>PGC-1α<sup>hi</sup>_Fib",
+  "stromal_4" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "stromal_5" = "Met<sup>low</sup>_Fib",
+  "stromal_6" = "Glycolysis<sup>int</sup>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "stromal_7" = "Glut<sup>hi</sup>_Fib",
+  "stromal_8" = "Glycolysis<sup>int</sup>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+# Create a combined cell type + neighbor variable and remove unwanted patterns
+df <- df %>% 
+  mutate(celltype_with_nbh = paste(cluster_var2, label2, sep = " &rarr; ")) %>% 
+  filter(!grepl("Ecad_neigh$|CD45_neigh$|CD45_CD3_[1-4]_neigh$", celltype_with_nbh))
+
+```
+
+# Plot 1: overall differences
+
+```{r plot across clinical, eval=TRUE, fig.width=9, fig.height=5}
+
+# Filter for significant differences
+df_filtered <- df %>%
+  mutate(difference = median_group2 - median_group1) %>%
+  filter(p < 0.05 & abs(difference) > 1) 
+
+# Order the factor levels for plotting
+df_filtered$celltype_with_nbh <- factor(
+  df_filtered$celltype_with_nbh,
+  levels = df_filtered$celltype_with_nbh[order(df_filtered$difference)]
+)
+
+# Create the lollipop plot
+p <- ggplot(df_filtered, aes(x = difference, y = celltype_with_nbh)) +
+  # Draw segments from 0 to the difference for a “lollipop” effect
+  geom_segment(aes(x = 0, xend = difference, 
+                   y = celltype_with_nbh, yend = celltype_with_nbh), 
+               color = "grey80") +
+  # Plot points, color by p-value, size by absolute difference
+  geom_point(aes(color = p, size = abs(difference)), shape = 16) +
+  # Color and size scales
+  scale_color_gradient(low = "red", high = "blue", limits = c(0, 0.05)) +
+  scale_size(range = c(2, 8)) +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Difference",
+    y = NULL,
+    color = "P value",
+    size = "|Difference|"
+  ) +
+ theme(axis.text.y = ggtext::element_markdown(size = 14, color="black"),
+        title = element_text(size = 8),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.x = element_text(size = 10),color = "black")
+
+print(p)
+
+```
+
+# Plot 2: stromal_2 with "has_str" Neighbors {.tabset .tabset-pills}
+
+```{r plot across celltypes, eval=TRUE, fig.width=6, fig.height=5, results='asis'}
+
+df$label2 <- recode(
+  df$label,
+  "with_CD31_1_neigh" = "Met<sup>low</sup>_EC",
+  "with_CD31_2_neigh" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_EC",
+  "with_CD31_3_neigh" = "Met<sup>hi</sup>_EC",
+  "with_CD31_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_EC",
+  "with_CD31_5_neigh" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>int</sup>PPP<sup>hi</sup>_EC",
+  "with_CD45_CD68_1_neigh" = "Met<sup>hi</sup>_Mf",
+  "with_CD45_CD68_2_neigh" = "Met<sup>low</sup>_Mf",
+  "with_CD45_CD68_3_neigh" = "Glycolysis<sup>low</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_CD45_CD68_4_neigh" = "Glycolysis<sup>hi</sup><br>TCA/OXPHOS<sup>hi</sup>_Mf",
+  "with_stromal_1_neigh" = "TCA/OXPHOS<sup>hi</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_2_neigh" = "Met<sup>hi</sup>_Fib",
+  "with_stromal_3_neigh" = "TCA/OXPHOS<sup>int</sup><br>PGC-1α<sup>hi</sup>_Fib",
+  "with_stromal_4_neigh" = "pmTOR<sup>hi</sup>CD98<sup>hi</sup>_Fib",
+  "with_stromal_5_neigh" = "Met<sup>low</sup>_Fib",
+  "with_stromal_6_neigh" = "Glycolysis<sup>int</sup><br>CS<sup>hi</sup>OGDH<sup>low</sup>_Fib",
+  "with_stromal_7_neigh" = "Glut<sup>hi</sup>_Fib",
+  "with_stromal_8_neigh" = "Glycolysis<sup>int</sup><br>PGC-1α<sup>low</sup>FAO<sup>low</sup>_Fib"
+)
+
+counter <- 1
+# Define the patterns and a descriptive name for each plot
+patterns <- list(
+  "has_str"      = "^has_str",
+  "has_CD31"     = "^has_CD31",
+  "has_CD45_CD68" = "^has_CD45_CD68"
+)
+
+# Loop over each pattern to generate and print the corresponding plot
+for (pattern_name in names(patterns)) {
+  
+  # Filter the dataset for cluster "stromal_2" and the current neighbor pattern
+  df_filtered <- df %>%
+    mutate(difference = median_group2 - median_group1) %>%
+    filter(cluster_var == "stromal_2" & grepl(patterns[[pattern_name]], neigh_var))
+  
+  # Order the factor levels based on the difference for a neat y-axis ordering
+  df_filtered$label2 <- factor(
+    df_filtered$label2,
+    levels = df_filtered$label2[order(df_filtered$difference)]
+  )
+  
+  # Create the lollipop plot
+  p <- ggplot(df_filtered, aes(x = difference, y = label2)) +
+    geom_segment(aes(x = 0, xend = difference, 
+                     y = label2, yend = label2), 
+                 color = "grey80") +
+    geom_point(aes(color = p, size = abs(difference)), shape = 16) +
+    scale_color_gradient(low = "red", high = "blue", limits = c(0, 0.05)) +
+    scale_size(range = c(2, 8)) +
+    theme_minimal(base_size = 14) +
+    labs(
+      x = "Difference",
+      y = NULL,
+      color = "P value",
+      size = "|Difference|",
+      title = paste("Lollipop Plot for stromal_2 ", pattern_name, "neighbors")
+    ) +
+ theme(axis.text.y = ggtext::element_markdown(size = 10, color="black"),
+        title = element_text(size = 8),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        axis.title.x = element_text(size = 10),color = "black")
+  
+  # Print the plot
+  cat("## Plot ",counter, "\n\n")
+  print(p)
+  counter <- counter + 1
+  cat("\n\n")
+}
+
+```
+
+
+# Outputs
+
+This analysis generates the following results: <br>
+
+1. Dot plots of differences in median frequency between the groups of a binary clinical outcome. <br>
+
+# Session information
+
+```{r session, eval=TRUE}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```

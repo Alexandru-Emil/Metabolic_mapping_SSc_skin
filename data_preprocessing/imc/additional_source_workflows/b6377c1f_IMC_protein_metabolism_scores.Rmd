@@ -1,0 +1,776 @@
+---
+title: "IMC Protein Metabolism Scores"
+author: "Codex"
+date: "`r Sys.Date()`"
+params:
+  analysis: "fibroblasts"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  dev = "png",
+  dpi = 300,
+  fig.retina = 2,
+  dev.args = list(bg = "white")
+)
+```
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(SingleCellExperiment)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+})
+```
+
+```{r data_and_scores}
+project_dir <- project_path("Revision/Nan annotation/Data/RMD files")
+imc_file <- project_path("Revision/Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData")
+output_dir <- file.path(project_dir, "imc_protein_score_outputs")
+scmetab_output_dir <- file.path(project_dir, "scmetabolism_outputs")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+if (!exists("spe")) {
+  load(imc_file)
+}
+
+score_assay <- "zrescaled"
+if (!score_assay %in% SummarizedExperiment::assayNames(spe)) {
+  stop("The IMC spe object does not contain assay 'zrescaled'.")
+}
+
+glycolysis <- c("GLUT1", "HK1", "PFKL1_PFKM", "PKM2", "LDHA", "GAPDH")
+tca_oxphos <- c("CS", "OGDH", "ATP5A", "SDHA")
+
+pathway_markers <- list(
+  "Glycolysis" = glycolysis,
+  "TCA / OXPHOS" = tca_oxphos
+)
+
+marker_status <- dplyr::bind_rows(lapply(names(pathway_markers), function(pathway_name) {
+  data.frame(
+    pathway = pathway_name,
+    marker = pathway_markers[[pathway_name]],
+    available = pathway_markers[[pathway_name]] %in% rownames(spe),
+    stringsAsFactors = FALSE
+  )
+}))
+
+missing_pathways <- marker_status %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(n_available = sum(available), .groups = "drop") %>%
+  dplyr::filter(n_available == 0)
+
+if (nrow(missing_pathways) > 0) {
+  stop("No IMC markers were found for: ", paste(missing_pathways$pathway, collapse = ", "))
+}
+
+make_imc_protein_score <- function(markers) {
+  markers <- intersect(markers, rownames(spe))
+  colMeans(as.matrix(SummarizedExperiment::assay(spe, score_assay)[markers, , drop = FALSE]), na.rm = TRUE)
+}
+
+score_wide <- as.data.frame(
+  vapply(pathway_markers, make_imc_protein_score, numeric(ncol(spe))),
+  check.names = FALSE
+)
+score_wide$cell <- colnames(spe)
+
+if ("sample_id" %in% colnames(SummarizedExperiment::colData(spe))) {
+  score_wide$sample_id <- as.character(spe$sample_id)
+} else {
+  score_wide$sample_id <- NA_character_
+}
+
+if (!"Rphenograph_500" %in% colnames(SummarizedExperiment::colData(spe))) {
+  stop("The IMC spe object must contain colData(spe)$Rphenograph_500 for fibroblast labels.")
+}
+
+if (!"Rphenograph_200EC" %in% colnames(SummarizedExperiment::colData(spe))) {
+  stop("The IMC spe object must contain colData(spe)$Rphenograph_200EC for EC labels.")
+}
+
+spe$metfiblabel <- dplyr::case_when(
+  as.character(spe$Rphenograph_500) %in% c("1", "2") ~ "Met_hi_Fib",
+  as.character(spe$Rphenograph_500) == "3" ~ "Other_Fib",
+  TRUE ~ NA_character_
+)
+
+spe$metEClabel <- dplyr::case_when(
+  as.character(spe$Rphenograph_200EC) %in% c("1", "2") ~ "Met_hi_EC",
+  as.character(spe$Rphenograph_200EC) == "3" ~ "Met_int_EC",
+  TRUE ~ NA_character_
+)
+
+analysis <- params$analysis
+
+analysis_config <- switch(
+  analysis,
+  "fibroblasts" = list(
+    label = "Fibroblast",
+    group_col = "metfiblabel",
+    group_levels = c("Other_Fib", "Met_hi_Fib"),
+    group_values = spe$metfiblabel,
+    file_prefix = "imc_protein_fibroblast",
+    scmetab_cell_joined_file = "scmetabolism_imc_xenium_cell_joined.csv"
+  ),
+  "endothelial" = list(
+    label = "EC",
+    group_col = "metEClabel",
+    group_levels = c("Met_int_EC", "Met_hi_EC"),
+    group_values = spe$metEClabel,
+    file_prefix = "imc_protein_ec",
+    scmetab_cell_joined_file = "scmetabolism_ec_imc_xenium_cell_joined.csv"
+  ),
+  stop("Unknown params$analysis. Use 'fibroblasts' or 'endothelial'.")
+)
+
+score_wide$group <- as.character(analysis_config$group_values)
+
+score_long <- score_wide %>%
+  dplyr::filter(!is.na(group), group %in% analysis_config$group_levels) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(names(pathway_markers)),
+    names_to = "pathway",
+    values_to = "score"
+  ) %>%
+  dplyr::mutate(
+    group = factor(group, levels = analysis_config$group_levels),
+    pathway = factor(pathway, levels = names(pathway_markers))
+  )
+
+score_summary <- score_long %>%
+  dplyr::group_by(pathway, group) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    n_samples = dplyr::n_distinct(sample_id[!is.na(sample_id) & sample_id != ""]),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    q25 = stats::quantile(score, 0.25, na.rm = TRUE),
+    q75 = stats::quantile(score, 0.75, na.rm = TRUE),
+    sd_score = stats::sd(score, na.rm = TRUE),
+    se_score = sd_score / sqrt(n_cells),
+    ci95 = 1.96 * se_score,
+    .groups = "drop"
+  )
+
+sample_summary <- score_long %>%
+  dplyr::filter(!is.na(sample_id), sample_id != "") %>%
+  dplyr::group_by(sample_id, pathway, group) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    median_score = median(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cor_summary <- function(df) {
+  df <- df %>%
+    dplyr::filter(
+      is.finite(imc_protein_score),
+      is.finite(scmetabolism_score)
+    )
+
+  if (nrow(df) < 3) {
+    return(data.frame(
+      n = nrow(df),
+      spearman_rho = NA_real_,
+      spearman_p = NA_real_,
+      pearson_r = NA_real_,
+      pearson_p = NA_real_
+    ))
+  }
+
+  if (length(unique(df$imc_protein_score)) < 2 || length(unique(df$scmetabolism_score)) < 2) {
+    return(data.frame(
+      n = nrow(df),
+      spearman_rho = NA_real_,
+      spearman_p = NA_real_,
+      pearson_r = NA_real_,
+      pearson_p = NA_real_
+    ))
+  }
+
+  spearman_test <- suppressWarnings(stats::cor.test(
+    df$imc_protein_score,
+    df$scmetabolism_score,
+    method = "spearman",
+    exact = FALSE
+  ))
+  pearson_test <- suppressWarnings(stats::cor.test(
+    df$imc_protein_score,
+    df$scmetabolism_score,
+    method = "pearson"
+  ))
+
+  data.frame(
+    n = nrow(df),
+    spearman_rho = unname(spearman_test$estimate),
+    spearman_p = spearman_test$p.value,
+    pearson_r = unname(pearson_test$estimate),
+    pearson_p = pearson_test$p.value
+  )
+}
+
+protein_scmetab_joined <- data.frame()
+protein_scmetab_cor_long <- data.frame()
+protein_scmetab_cor_stats <- data.frame()
+scmetab_cell_file <- file.path(scmetab_output_dir, analysis_config$scmetab_cell_joined_file)
+
+if (file.exists(scmetab_cell_file)) {
+  scmetab_cell <- read.csv(scmetab_cell_file, check.names = FALSE, stringsAsFactors = FALSE)
+  required_scmetab_cols <- c(
+    "KEY",
+    analysis_config$group_col,
+    "xenium_glycolysis_score",
+    "xenium_tca_score"
+  )
+  missing_scmetab_cols <- setdiff(required_scmetab_cols, colnames(scmetab_cell))
+
+  if (length(missing_scmetab_cols) == 0) {
+    if ("cell" %in% colnames(scmetab_cell)) {
+      scmetab_cell$xenium_cell <- as.character(scmetab_cell$cell)
+    } else {
+      scmetab_cell$xenium_cell <- NA_character_
+    }
+
+    if ("sample_id" %in% colnames(scmetab_cell)) {
+      scmetab_cell$scmetab_sample_id <- as.character(scmetab_cell$sample_id)
+    } else {
+      scmetab_cell$scmetab_sample_id <- NA_character_
+    }
+
+    scmetab_keep <- scmetab_cell %>%
+      dplyr::transmute(
+        KEY = as.character(KEY),
+        xenium_cell,
+        scmetab_sample_id,
+        scmetab_group = as.character(.data[[analysis_config$group_col]]),
+        scmetabolism_glycolysis_score = xenium_glycolysis_score,
+        scmetabolism_tca_score = xenium_tca_score
+      )
+
+    imc_protein_keep <- score_wide %>%
+      dplyr::mutate(
+        KEY = as.character(cell),
+        group = as.character(group)
+      ) %>%
+      dplyr::select(
+        KEY,
+        imc_cell = cell,
+        imc_sample_id = sample_id,
+        group,
+        imc_protein_glycolysis_score = Glycolysis,
+        imc_protein_tca_oxphos_score = `TCA / OXPHOS`
+      )
+
+    protein_scmetab_joined <- imc_protein_keep %>%
+      dplyr::inner_join(scmetab_keep, by = "KEY") %>%
+      dplyr::filter(
+        group %in% analysis_config$group_levels,
+        scmetab_group %in% analysis_config$group_levels,
+        group == scmetab_group
+      ) %>%
+      dplyr::mutate(group = factor(group, levels = analysis_config$group_levels))
+
+    protein_scmetab_cor_long <- dplyr::bind_rows(
+      protein_scmetab_joined %>%
+        dplyr::transmute(
+          KEY,
+          imc_cell,
+          xenium_cell,
+          imc_sample_id,
+          scmetab_sample_id,
+          group,
+          comparison = "Glycolysis",
+          imc_protein_score = imc_protein_glycolysis_score,
+          scmetabolism_score = scmetabolism_glycolysis_score
+        ),
+      protein_scmetab_joined %>%
+        dplyr::transmute(
+          KEY,
+          imc_cell,
+          xenium_cell,
+          imc_sample_id,
+          scmetab_sample_id,
+          group,
+          comparison = "TCA / OXPHOS",
+          imc_protein_score = imc_protein_tca_oxphos_score,
+          scmetabolism_score = scmetabolism_tca_score
+        )
+    ) %>%
+      dplyr::filter(
+        is.finite(imc_protein_score),
+        is.finite(scmetabolism_score)
+      ) %>%
+      dplyr::mutate(
+        group = factor(as.character(group), levels = analysis_config$group_levels),
+        comparison = factor(comparison, levels = names(pathway_markers))
+      )
+
+    protein_scmetab_cor_stats_by_group <- protein_scmetab_cor_long %>%
+      dplyr::group_by(comparison, group) %>%
+      dplyr::group_modify(~ cor_summary(.x)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(level = "group")
+
+    protein_scmetab_cor_stats_all <- protein_scmetab_cor_long %>%
+      dplyr::group_by(comparison) %>%
+      dplyr::group_modify(~ cor_summary(.x)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(group = "All matched cells", level = "all")
+
+    protein_scmetab_cor_stats <- dplyr::bind_rows(
+      protein_scmetab_cor_stats_by_group,
+      protein_scmetab_cor_stats_all
+    ) %>%
+      dplyr::select(level, comparison, group, dplyr::everything())
+  } else {
+    warning(
+      "Skipping IMC protein vs scMetabolism correlation; missing columns in ",
+      scmetab_cell_file,
+      ": ",
+      paste(missing_scmetab_cols, collapse = ", ")
+    )
+  }
+} else {
+  warning("Skipping IMC protein vs scMetabolism correlation; file not found: ", scmetab_cell_file)
+}
+
+write.csv(
+  score_long,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_cell_scores.csv")),
+  row.names = FALSE
+)
+write.csv(
+  score_summary,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_summary.csv")),
+  row.names = FALSE
+)
+write.csv(
+  sample_summary,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_sample_summary.csv")),
+  row.names = FALSE
+)
+write.csv(
+  marker_status,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_marker_status.csv")),
+  row.names = FALSE
+)
+write.csv(
+  protein_scmetab_joined,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_protein_scmetabolism_cell_joined.csv")),
+  row.names = FALSE
+)
+write.csv(
+  protein_scmetab_cor_long,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_protein_scmetabolism_correlation_long.csv")),
+  row.names = FALSE
+)
+write.csv(
+  protein_scmetab_cor_stats,
+  file.path(output_dir, paste0(analysis_config$file_prefix, "_protein_scmetabolism_correlation_stats.csv")),
+  row.names = FALSE
+)
+
+analysis_config$label
+```
+
+# `r analysis_config$label` IMC Protein Scores
+
+Scores are the mean of the available IMC `zrescaled` protein markers in each pathway.
+
+```{r marker_status}
+kable(marker_status, digits = 3)
+```
+
+```{r summary_table}
+kable(score_summary, digits = 4)
+```
+
+```{r plotting_helpers}
+pathway_levels <- names(pathway_markers)
+pathway_labels <- c(
+  "Glycolysis" = "Glycolysis",
+  "TCA / OXPHOS" = "TCA /\nOXPHOS"
+)
+
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || rng[1] == rng[2]) {
+    return(rep(0.5, length(x)))
+  }
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+
+make_energy_dotplot <- function(summary_df, title, scale_by_column = FALSE) {
+  plot_df <- summary_df %>%
+    dplyr::mutate(
+      pathway = factor(as.character(pathway), levels = rev(pathway_levels)),
+      group = factor(as.character(group), levels = analysis_config$group_levels)
+    )
+
+  if (isTRUE(scale_by_column)) {
+    plot_df <- plot_df %>%
+      dplyr::group_by(pathway) %>%
+      dplyr::mutate(
+        fill_score = rescale01(mean_score),
+        size_score = fill_score
+      ) %>%
+      dplyr::ungroup()
+    legend_title <- "Column-scaled mean"
+  } else {
+    plot_df <- plot_df %>%
+      dplyr::mutate(
+        fill_score = mean_score,
+        size_score = rescale01(mean_score)
+      )
+    legend_title <- "Mean IMC protein score"
+  }
+
+  ggplot(plot_df, aes(x = group, y = pathway)) +
+    geom_point(
+      aes(fill = fill_score, size = size_score),
+      shape = 21,
+      color = "grey35",
+      stroke = 0.35
+    ) +
+    scale_y_discrete(labels = pathway_labels) +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = legend_title) +
+    scale_size(range = c(6.5, 12.5), guide = "none") +
+    labs(title = title, x = NULL, y = NULL) +
+    theme_bw(base_size = 14) +
+    theme(
+      axis.text.x = element_text(size = 13, face = "bold"),
+      axis.text.y = element_text(size = 13, lineheight = 0.95),
+      legend.position = "right",
+      legend.title = element_text(size = 12.5),
+      legend.text = element_text(size = 11),
+      panel.grid.major = element_line(color = "grey88"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 14.5, hjust = 0.5, margin = margin(b = 6)),
+      plot.margin = margin(5.5, 6, 5.5, 5.5)
+    )
+}
+
+save_plot_set <- function(plot, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  ggsave(png_file, plot, width = width, height = height, dpi = 300, bg = "white")
+
+  grDevices::pdf(pdf_file, width = width, height = height, useDingbats = FALSE, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+```
+
+## Dot Plots
+
+```{r dotplots, fig.width=6.8, fig.height=3.4}
+p_dot_raw <- make_energy_dotplot(
+  score_summary,
+  paste0(analysis_config$label, " IMC protein scores"),
+  scale_by_column = FALSE
+)
+
+p_dot_scaled <- make_energy_dotplot(
+  score_summary,
+  paste0(analysis_config$label, " IMC protein scores - scaled"),
+  scale_by_column = TRUE
+)
+
+save_plot_set(
+  p_dot_raw,
+  paste0(analysis_config$file_prefix, "_energy_dotplot_raw_reversed_axes"),
+  width = 6.8,
+  height = 3.4
+)
+save_plot_set(
+  p_dot_scaled,
+  paste0(analysis_config$file_prefix, "_energy_dotplot_scaled_by_column_reversed_axes"),
+  width = 6.8,
+  height = 3.4
+)
+
+p_dot_raw
+p_dot_scaled
+```
+
+## Cell-Level Distributions
+
+```{r distribution_plots, fig.width=7.2, fig.height=4.4}
+p_violin <- ggplot(score_long, aes(x = group, y = score, fill = group)) +
+  geom_violin(width = 0.82, alpha = 0.8, color = "grey30", trim = TRUE) +
+  geom_boxplot(width = 0.16, outlier.shape = NA, fill = "white", color = "grey15") +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  scale_fill_manual(values = c(
+    "Other_Fib" = "#4E79A7",
+    "Met_hi_Fib" = "#E15759",
+    "Met_int_EC" = "#4E79A7",
+    "Met_hi_EC" = "#E15759"
+  )) +
+  labs(
+    title = paste0(analysis_config$label, " IMC protein score distributions"),
+    x = NULL,
+    y = "Mean zrescaled IMC protein score",
+    fill = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold", angle = 20, hjust = 1),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+p_density <- ggplot(score_long, aes(x = score, fill = group, color = group)) +
+  geom_density(alpha = 0.32, linewidth = 0.8, adjust = 1.1) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free") +
+  scale_fill_manual(values = c(
+    "Other_Fib" = "#4E79A7",
+    "Met_hi_Fib" = "#E15759",
+    "Met_int_EC" = "#4E79A7",
+    "Met_hi_EC" = "#E15759"
+  )) +
+  scale_color_manual(values = c(
+    "Other_Fib" = "#2F5F8F",
+    "Met_hi_Fib" = "#B23B3F",
+    "Met_int_EC" = "#2F5F8F",
+    "Met_hi_EC" = "#B23B3F"
+  )) +
+  labs(
+    title = paste0(analysis_config$label, " IMC protein score densities"),
+    x = "Mean zrescaled IMC protein score",
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+save_plot_set(
+  p_violin,
+  paste0(analysis_config$file_prefix, "_energy_violin"),
+  width = 7.2,
+  height = 4.4
+)
+save_plot_set(
+  p_density,
+  paste0(analysis_config$file_prefix, "_energy_density"),
+  width = 7.2,
+  height = 4.4
+)
+
+p_violin
+p_density
+```
+
+## Sample Means
+
+```{r sample_mean_plot, fig.width=7.2, fig.height=4.4}
+p_sample <- ggplot(sample_summary, aes(x = group, y = mean_score, color = group)) +
+  geom_point(
+    position = position_jitter(width = 0.08, height = 0),
+    size = 2.8,
+    alpha = 0.85
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "crossbar",
+    width = 0.42,
+    color = "grey20",
+    linewidth = 0.35
+  ) +
+  facet_wrap(~ pathway, nrow = 1, scales = "free_y") +
+  scale_color_manual(values = c(
+    "Other_Fib" = "#4E79A7",
+    "Met_hi_Fib" = "#E15759",
+    "Met_int_EC" = "#4E79A7",
+    "Met_hi_EC" = "#E15759"
+  )) +
+  labs(
+    title = paste0(analysis_config$label, " IMC protein sample means"),
+    subtitle = "Each dot is one sample/group mean",
+    x = NULL,
+    y = "Sample mean IMC protein score",
+    color = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold", angle = 20, hjust = 1),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+save_plot_set(
+  p_sample,
+  paste0(analysis_config$file_prefix, "_energy_sample_means"),
+  width = 7.2,
+  height = 4.4
+)
+
+p_sample
+```
+
+## Correlation With Xenium scMetabolism
+
+The IMC protein scores above are joined to the Xenium scMetabolism AUCell scores
+by the shared IMC/Xenium `KEY`.
+
+```{r protein_scmetabolism_correlation_table}
+if (nrow(protein_scmetab_cor_stats) > 0) {
+  kable(protein_scmetab_cor_stats, digits = 4)
+} else {
+  cat("No matched cells were available for IMC protein-score vs Xenium scMetabolism correlation.")
+}
+```
+
+```{r protein_scmetabolism_correlation_plots, fig.width=8.2, fig.height=5.2}
+format_p <- function(p_value) {
+  dplyr::case_when(
+    is.na(p_value) ~ "p = NA",
+    p_value < 0.001 ~ "p < 0.001",
+    TRUE ~ paste0("p = ", formatC(p_value, format = "f", digits = 3))
+  )
+}
+
+empty_correlation_plot <- function(title) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No matched cells available", size = 4) +
+    labs(title = title) +
+    theme_void()
+}
+
+if (nrow(protein_scmetab_cor_long) > 0) {
+  cor_plot_stats <- protein_scmetab_cor_stats %>%
+    dplyr::filter(level == "group") %>%
+    dplyr::mutate(
+      comparison = factor(as.character(comparison), levels = names(pathway_markers)),
+      group = factor(as.character(group), levels = analysis_config$group_levels),
+      label = paste0(
+        "Spearman rho = ",
+        formatC(spearman_rho, format = "f", digits = 2),
+        "\n",
+        format_p(spearman_p),
+        "\nn = ",
+        n
+      )
+    )
+
+  p_protein_scmetab_points <- ggplot(
+    protein_scmetab_cor_long,
+    aes(x = imc_protein_score, y = scmetabolism_score, color = group)
+  ) +
+    geom_point(alpha = 0.45, size = 1.25) +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE, linewidth = 0.65) +
+    geom_label(
+      data = cor_plot_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.04,
+      vjust = 1.08,
+      size = 3.1,
+      label.size = 0.2,
+      fill = "white",
+      alpha = 0.9
+    ) +
+    facet_grid(group ~ comparison, scales = "free") +
+    scale_color_manual(values = c(
+      "Other_Fib" = "#4E79A7",
+      "Met_hi_Fib" = "#E15759",
+      "Met_int_EC" = "#4E79A7",
+      "Met_hi_EC" = "#E15759"
+    )) +
+    labs(
+      title = paste0(analysis_config$label, " IMC protein score vs Xenium scMetabolism"),
+      x = "IMC protein score",
+      y = "Xenium scMetabolism AUCell score",
+      color = NULL
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      strip.text = element_text(size = 11.5, face = "bold"),
+      plot.title = element_text(hjust = 0.5)
+    )
+
+  p_protein_scmetab_bins <- ggplot(
+    protein_scmetab_cor_long,
+    aes(x = imc_protein_score, y = scmetabolism_score)
+  ) +
+    geom_bin2d(bins = 32) +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "grey15", linewidth = 0.65) +
+    geom_label(
+      data = cor_plot_stats,
+      aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.04,
+      vjust = 1.08,
+      size = 3.1,
+      label.size = 0.2,
+      fill = "white",
+      alpha = 0.9
+    ) +
+    facet_grid(group ~ comparison, scales = "free") +
+    scale_fill_gradient(low = "white", high = "#D7301F", name = "Matched cells") +
+    labs(
+      title = paste0(analysis_config$label, " binned IMC protein vs scMetabolism correlation"),
+      x = "IMC protein score",
+      y = "Xenium scMetabolism AUCell score"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      strip.text = element_text(size = 11.5, face = "bold"),
+      plot.title = element_text(hjust = 0.5)
+    )
+} else {
+  p_protein_scmetab_points <- empty_correlation_plot(
+    paste0(analysis_config$label, " IMC protein score vs Xenium scMetabolism")
+  )
+  p_protein_scmetab_bins <- empty_correlation_plot(
+    paste0(analysis_config$label, " binned IMC protein vs scMetabolism correlation")
+  )
+}
+
+save_plot_set(
+  p_protein_scmetab_points,
+  paste0(analysis_config$file_prefix, "_protein_scmetabolism_correlation_points"),
+  width = 8.2,
+  height = 5.2
+)
+save_plot_set(
+  p_protein_scmetab_bins,
+  paste0(analysis_config$file_prefix, "_protein_scmetabolism_correlation_bins"),
+  width = 8.2,
+  height = 5.2
+)
+
+p_protein_scmetab_points
+p_protein_scmetab_bins
+```

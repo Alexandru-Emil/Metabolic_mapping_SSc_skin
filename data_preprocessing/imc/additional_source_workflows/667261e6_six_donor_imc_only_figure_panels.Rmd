@@ -1,0 +1,1205 @@
+---
+title: "IMC-only figure panels: six matched IMC-Xenium donors"
+author: "Codex"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    self_contained: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  dev = "png",
+  dpi = 300,
+  fig.retina = 2,
+  fig.align = "center",
+  fig.path = "six_donor_imc_only_outputs/report_figures/"
+)
+```
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(SingleCellExperiment)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(patchwork)
+  library(knitr)
+  library(grid)
+})
+```
+
+```{r paths_and_constants}
+report_dir <- normalizePath(
+  dirname(knitr::current_input(dir = TRUE)),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+imc_file <- paste0(
+  paste0(project_path("Revision/"), "/"),
+  "Nan annotation/Data/IMC spe objects/New IMC/spe2025-12-17 umap.RData"
+)
+
+source_scripts <- c(
+  paste0(
+    paste0(project_path("Revision/"), "/"),
+    "Nan annotation/Data/RMD files/IMC heatmap sankey_new.Rmd"
+  ),
+  paste0(
+    paste0(project_path("Revision/"), "/"),
+    "Nan annotation/Data/RMD files/IMC protein and scMetabolism scores combined.Rmd"
+  ),
+  paste0(
+    paste0(project_path("Revision/"), "/"),
+    "Nan annotation/Data/R Scripts/Heatmap-IMC23.12.2025_Veda.R"
+  )
+)
+
+output_dir <- file.path(report_dir, "six_donor_imc_only_outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+excluded_sample <- "ExcludedValidation"
+
+sample_to_donor <- c(
+  "Validation1" = "Validation1",
+  "Validation2" = "Validation2",
+  "ExcludedValidation" = "ExcludedValidation",
+  "Validation3" = "Validation3",
+  "Validation4" = "Validation4",
+  "Validation5" = "Validation5",
+  "Validation6" = "Validation6"
+)
+
+matched_samples <- setdiff(names(sample_to_donor), excluded_sample)
+matched_donor_levels <- c("Validation1", "Validation2", "Validation3", "Validation4", "Validation5", "Validation6")
+
+fib_levels <- c("Met_hi_Fib", "Other_Fib")
+fib_colors <- c("Met_hi_Fib" = "#F8766D", "Other_Fib" = "#00BFC4")
+
+ec_levels <- c("Met_hi_EC", "Other_EC")
+ec_colors <- c("Met_hi_EC" = "#E69F00", "Other_EC" = "#56B4E9")
+
+score_palette <- c("#2C7BB6", "#ABD9E9", "#FFFFBF", "#FDAE61", "#D7191C")
+score_limits <- c(-1, 1)
+score_breaks <- seq(-1, 1, by = 0.5)
+heatmap_palette <- viridisLite::viridis(100)
+
+metabolic_markers <- c(
+  "GLUT1", "HK1", "PFKL1_PFKM", "PKM2", "LDHA", "GAPDH",
+  "CS", "OGDH", "ATP5A", "SDHA",
+  "CD98", "ACAC", "CPT1a", "G6PD", "pAMPK", "p_mTOR",
+  "NOX4", "HIF1a", "PGC1a", "mtTFA", "pNRF2"
+)
+
+glycolysis_markers <- c("GLUT1", "HK1", "PFKL1_PFKM", "PKM2", "LDHA", "GAPDH")
+tca_oxphos_markers <- c("CS", "OGDH", "ATP5A", "SDHA")
+protein_markers <- c("aSMA", "Cdh11", "FAP")
+
+fib_umap_name <- "umap_n_neighbors_15_cell_type_Stromal_1"
+ec_umap_name <- "umap_n_neighbors_15_cell_type_Endothelial_3"
+
+save_plot_set <- function(plot, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  ggsave(
+    png_file,
+    plot = plot,
+    width = width,
+    height = height,
+    dpi = 300,
+    bg = "white"
+  )
+
+  grDevices::pdf(
+    pdf_file,
+    width = width,
+    height = height,
+    useDingbats = FALSE,
+    bg = "white"
+  )
+  print(plot)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  print(plot)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+
+draw_grob <- function(grob) {
+  grid::grid.newpage()
+  grid::grid.draw(grob)
+}
+
+save_grob_set <- function(grob, basename, width, height) {
+  png_file <- file.path(output_dir, paste0(basename, ".png"))
+  pdf_file <- file.path(output_dir, paste0(basename, ".pdf"))
+  svg_file <- file.path(output_dir, paste0(basename, ".svg"))
+
+  grDevices::png(
+    png_file,
+    width = width,
+    height = height,
+    units = "in",
+    res = 300,
+    bg = "white"
+  )
+  draw_grob(grob)
+  grDevices::dev.off()
+
+  grDevices::pdf(
+    pdf_file,
+    width = width,
+    height = height,
+    useDingbats = FALSE,
+    bg = "white"
+  )
+  draw_grob(grob)
+  grDevices::dev.off()
+
+  grDevices::svg(svg_file, width = width, height = height, bg = "white")
+  draw_grob(grob)
+  grDevices::dev.off()
+
+  invisible(c(png_file, pdf_file, svg_file))
+}
+
+format_p <- function(p_value) {
+  dplyr::case_when(
+    is.na(p_value) ~ "p = NA",
+    p_value < 0.001 ~ "p < 0.001",
+    TRUE ~ paste0("p = ", formatC(p_value, digits = 3, format = "f"))
+  )
+}
+
+paired_test <- function(data, feature_col, value_col, group_col, group_1, group_2) {
+  test_data <- data %>%
+    dplyr::transmute(
+      donor = as.character(donor),
+      feature = as.character(.data[[feature_col]]),
+      group = as.character(.data[[group_col]]),
+      value = as.numeric(.data[[value_col]])
+    )
+
+  dplyr::bind_rows(lapply(unique(test_data$feature), function(current_feature) {
+    wide <- test_data %>%
+      dplyr::filter(feature == current_feature, group %in% c(group_1, group_2)) %>%
+      dplyr::select(donor, group, value) %>%
+      tidyr::pivot_wider(names_from = group, values_from = value) %>%
+      dplyr::filter(
+        is.finite(.data[[group_1]]),
+        is.finite(.data[[group_2]])
+      )
+
+    test_result <- if (nrow(wide) >= 2) {
+      suppressWarnings(stats::wilcox.test(
+        wide[[group_1]],
+        wide[[group_2]],
+        paired = TRUE,
+        exact = FALSE
+      ))
+    } else {
+      NULL
+    }
+
+    delta <- wide[[group_1]] - wide[[group_2]]
+
+    data.frame(
+      feature = current_feature,
+      group_1 = group_1,
+      group_2 = group_2,
+      n_paired_donors = nrow(wide),
+      mean_delta_group_1_minus_group_2 = if (length(delta)) mean(delta) else NA_real_,
+      median_delta_group_1_minus_group_2 = if (length(delta)) median(delta) else NA_real_,
+      p_value = if (is.null(test_result)) NA_real_ else test_result$p.value,
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+base_umap_theme <- theme_classic(base_size = 8) +
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 6.8, color = "grey20"),
+    axis.ticks = element_line(linewidth = 0.35),
+    axis.line = element_line(linewidth = 0.4),
+    legend.title = element_text(size = 6.6),
+    legend.text = element_text(size = 6.8),
+    legend.key.height = grid::unit(0.25, "cm"),
+    legend.key.width = grid::unit(0.28, "cm"),
+    legend.spacing.y = grid::unit(0.02, "cm"),
+    legend.margin = margin(0, 0, 0, 1),
+    plot.title = element_text(
+      size = 9,
+      face = "bold",
+      hjust = 0.5,
+      lineheight = 0.95,
+      margin = margin(b = 2)
+    ),
+    plot.subtitle = element_blank(),
+    plot.margin = margin(3, 4, 3, 3)
+  )
+
+figure_export_manifest <- data.frame(
+  panel = c(
+    "FibMET UMAP",
+    "FibMET IMC score UMAPs",
+    "FibMET protein expression",
+    "FibMET metabolic heatmap",
+    "FibMET donor score comparison",
+    "EndMET UMAP",
+    "EndMET metabolic heatmap"
+  ),
+  width_in = c(4.2, 6.8, 6.8, 4.8, 5.2, 4.2, 4.8),
+  height_in = c(3.6, 4.0, 3.2, 3.35, 3.7, 3.6, 3.35),
+  figure_ratio = c(4.2 / 3.6, 6.8 / 4.0, 6.8 / 3.2, 4.8 / 3.35, 5.2 / 3.7, 4.2 / 3.6, 4.8 / 3.35),
+  color_scale = c(
+    "Original FibMET salmon/cyan",
+    "Original blue-yellow-red; fixed [-1, 1]",
+    "Original FibMET salmon/cyan",
+    "Viridis; fixed [-1, 0.5]",
+    "Original FibMET salmon/cyan",
+    "Original EndMET orange/blue",
+    "Viridis; fixed [-1, 1]"
+  ),
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  figure_export_manifest,
+  file.path(output_dir, "figure_export_manifest.csv"),
+  row.names = FALSE
+)
+```
+
+```{r load_and_filter}
+if (!file.exists(imc_file)) {
+  stop("The annotated IMC SPE file was not found: ", imc_file)
+}
+
+imc_env <- new.env(parent = emptyenv())
+load(imc_file, envir = imc_env)
+
+if (!exists("spe", envir = imc_env, inherits = FALSE)) {
+  stop("The IMC RData file does not contain an object named 'spe'.")
+}
+
+spe_all <- imc_env[["spe"]]
+required_coldata <- c("sample_id", "gates", "Rphenograph_500", "Rphenograph_200EC")
+missing_coldata <- setdiff(required_coldata, colnames(colData(spe_all)))
+if (length(missing_coldata) > 0) {
+  stop("Missing required colData fields: ", paste(missing_coldata, collapse = ", "))
+}
+
+if (!all(c(fib_umap_name, ec_umap_name) %in% reducedDimNames(spe_all))) {
+  stop("The required finalized FibMET or EndMET UMAP embedding is missing.")
+}
+
+object_samples <- sort(unique(as.character(spe_all$sample_id)))
+unexpected_samples <- setdiff(object_samples, names(sample_to_donor))
+missing_samples <- setdiff(names(sample_to_donor), object_samples)
+
+if (length(unexpected_samples) > 0 || length(missing_samples) > 0) {
+  stop(
+    "The annotated IMC object does not match the expected seven-sample manifest. ",
+    "Unexpected: ", paste(unexpected_samples, collapse = ", "),
+    "; missing: ", paste(missing_samples, collapse = ", ")
+  )
+}
+
+keep_six <- as.character(spe_all$sample_id) %in% matched_samples
+spe6 <- spe_all[, keep_six]
+
+if (ncol(spe6) == 0 || length(unique(as.character(spe6$sample_id))) != 6) {
+  stop("Six-donor filtering did not produce exactly six samples.")
+}
+
+spe6$donor <- unname(sample_to_donor[as.character(spe6$sample_id)])
+spe6$donor <- factor(as.character(spe6$donor), levels = matched_donor_levels)
+
+spe6$metfiblabel <- dplyr::case_when(
+  as.character(spe6$Rphenograph_500) %in% c("1", "2") ~ "Met_hi_Fib",
+  as.character(spe6$Rphenograph_500) == "3" ~ "Other_Fib",
+  TRUE ~ NA_character_
+)
+
+spe6$metEClabel <- dplyr::case_when(
+  as.character(spe6$Rphenograph_200EC) %in% c("1", "2") ~ "Met_hi_EC",
+  as.character(spe6$Rphenograph_200EC) == "3" ~ "Other_EC",
+  TRUE ~ NA_character_
+)
+
+asinh6 <- as.matrix(assay(spe6, "asinh"))
+row_mu6 <- rowMeans(asinh6, na.rm = TRUE)
+row_sd6 <- apply(asinh6, 1, stats::sd, na.rm = TRUE)
+row_sd6[!is.finite(row_sd6) | row_sd6 == 0] <- 1
+
+z6 <- sweep(sweep(asinh6, 1, row_mu6, "-"), 1, row_sd6, "/")
+assay(spe6, "z_six_donor") <- z6
+
+required_markers <- unique(c(metabolic_markers, protein_markers))
+marker_manifest <- data.frame(
+  marker = required_markers,
+  available = required_markers %in% rownames(spe6),
+  stringsAsFactors = FALSE
+)
+
+if (!all(marker_manifest$available)) {
+  stop(
+    "Required IMC markers are absent: ",
+    paste(marker_manifest$marker[!marker_manifest$available], collapse = ", ")
+  )
+}
+
+write.csv(marker_manifest, file.path(output_dir, "marker_availability.csv"), row.names = FALSE)
+```
+
+# Cohort audit
+
+The six matched donors are retained from the finalized annotated post-Xenium
+IMC object. `ExcludedValidation` is excluded before every plotted-cell selection,
+six-donor z-score calculation, group summary, and donor-level test.
+
+```{r cohort_audit}
+sample_counts_all <- as.data.frame(table(as.character(spe_all$sample_id))) %>%
+  dplyr::rename(sample_id = Var1, n_all_cells = Freq) %>%
+  dplyr::mutate(
+    donor = unname(sample_to_donor[as.character(sample_id)]),
+    analysis_status = ifelse(sample_id == excluded_sample, "Excluded", "Included")
+  ) %>%
+  dplyr::arrange(factor(donor, levels = c(matched_donor_levels, "ExcludedValidation")))
+
+gate_counts_six <- as.data.frame(table(
+  sample_id = as.character(spe6$sample_id),
+  gate = as.character(spe6$gates)
+)) %>%
+  dplyr::filter(Freq > 0) %>%
+  dplyr::mutate(donor = unname(sample_to_donor[as.character(sample_id)])) %>%
+  dplyr::rename(n_cells = Freq)
+
+panel_counts <- dplyr::bind_rows(
+  as.data.frame(table(
+    group = factor(spe6$metfiblabel, levels = fib_levels)
+  )) %>%
+    dplyr::mutate(panel = "FibMET", .before = 1),
+  as.data.frame(table(
+    group = factor(spe6$metEClabel, levels = ec_levels)
+  )) %>%
+    dplyr::mutate(panel = "EndMET", .before = 1)
+) %>%
+  dplyr::filter(Freq > 0) %>%
+  dplyr::rename(n_cells = Freq)
+
+write.csv(sample_counts_all, file.path(output_dir, "donor_manifest.csv"), row.names = FALSE)
+write.csv(gate_counts_six, file.path(output_dir, "six_donor_gate_counts.csv"), row.names = FALSE)
+write.csv(panel_counts, file.path(output_dir, "panel_cell_counts.csv"), row.names = FALSE)
+
+kable(
+  sample_counts_all,
+  caption = "Post-Xenium IMC donor manifest",
+  align = c("l", "r", "l", "l")
+)
+```
+
+```{r panel_counts_table}
+kable(
+  panel_counts,
+  caption = "Cells contributing to the reproduced IMC panels",
+  align = c("l", "l", "r")
+)
+```
+
+**Scope note.** The five-state aSMA supplementary UMAP and heatmap in the
+first supplied figure were generated from the separate reference-cohort
+object (`spe_aSMA.rds`; 9 SSc and 7 healthy donors). Those six post-Xenium
+donors do not exist in that object. The reference-cohort panels are therefore
+not regenerated here.
+
+# Fibroblasts {.tabset .tabset-pill}
+
+## FibMET UMAP
+
+```{r prepare_fib_umap}
+fib_umap_matrix <- reducedDim(spe6, fib_umap_name)
+fib_umap <- data.frame(
+  cell = colnames(spe6),
+  UMAP1 = fib_umap_matrix[, 1],
+  UMAP2 = fib_umap_matrix[, 2],
+  sample_id = as.character(spe6$sample_id),
+  donor = as.character(spe6$donor),
+  metfiblabel = as.character(spe6$metfiblabel),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::filter(
+    complete.cases(UMAP1, UMAP2),
+    !is.na(metfiblabel),
+    metfiblabel %in% fib_levels
+  ) %>%
+  dplyr::mutate(
+    donor = factor(donor, levels = matched_donor_levels),
+    metfiblabel = factor(metfiblabel, levels = fib_levels)
+  )
+
+if (nrow(fib_umap) != sum(!is.na(spe6$metfiblabel))) {
+  stop("FibMET UMAP cell count does not match the finalized FibMET labels.")
+}
+
+write.csv(
+  fib_umap,
+  file.path(output_dir, "fibmet_umap_cells_six_donors.csv"),
+  row.names = FALSE
+)
+
+p_fib_umap <- ggplot(
+  fib_umap,
+  aes(x = UMAP1, y = UMAP2, color = metfiblabel)
+) +
+  geom_point(size = 0.55, alpha = 0.9, stroke = 0) +
+  scale_color_manual(values = fib_colors, drop = FALSE) +
+  labs(
+    title = "Metabolic phenotypes of fibroblasts (FibMET)",
+    x = "UMAP1",
+    y = "UMAP2",
+    color = NULL
+  ) +
+  base_umap_theme +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 2.2, alpha = 1),
+      keyheight = grid::unit(0.28, "cm")
+    )
+  ) +
+  theme(legend.position = "right")
+
+save_plot_set(p_fib_umap, "fibmet_umap_six_donors", width = 4.2, height = 3.6)
+```
+
+```{r show_fib_umap, echo=FALSE, fig.width=4.2, fig.height=3.6}
+p_fib_umap
+```
+
+## IMC protein metabolic scores
+
+```{r prepare_fib_scores}
+glycolysis_score <- colMeans(z6[glycolysis_markers, , drop = FALSE], na.rm = TRUE)
+tca_oxphos_score <- colMeans(z6[tca_oxphos_markers, , drop = FALSE], na.rm = TRUE)
+names(glycolysis_score) <- colnames(spe6)
+names(tca_oxphos_score) <- colnames(spe6)
+
+fib_umap_scores <- fib_umap %>%
+  dplyr::mutate(
+    glycolysis_score = unname(glycolysis_score[cell]),
+    tca_oxphos_score = unname(tca_oxphos_score[cell])
+  )
+
+make_score_umap <- function(data, score_col, title) {
+  ggplot(data, aes(x = UMAP1, y = UMAP2, color = .data[[score_col]])) +
+    geom_point(size = 0.52, alpha = 0.92, stroke = 0) +
+    scale_color_gradientn(
+      colors = score_palette,
+      limits = score_limits,
+      breaks = score_breaks,
+      oob = scales::squish,
+      name = "Score",
+      guide = guide_colorbar(
+        barwidth = grid::unit(0.18, "cm"),
+        barheight = grid::unit(0.95, "cm"),
+        title.position = "top",
+        title.hjust = 0.5
+      )
+    ) +
+    labs(title = title, x = "UMAP1", y = "UMAP2") +
+    base_umap_theme +
+    theme(
+      legend.position = "right",
+      legend.title = element_text(size = 6.3, hjust = 0.5),
+      legend.text = element_text(size = 5.9),
+      legend.margin = margin(0, 0, 0, 0),
+      plot.margin = margin(3, 2, 3, 2)
+    )
+}
+
+p_fib_glycolysis <- make_score_umap(
+  fib_umap_scores,
+  "glycolysis_score",
+  "Glycolysis score"
+)
+
+p_fib_tca <- make_score_umap(
+  fib_umap_scores,
+  "tca_oxphos_score",
+  "TCA/OXPHOS score"
+)
+
+p_fib_scores <- (
+  p_fib_glycolysis + p_fib_tca +
+    patchwork::plot_layout(guides = "keep") +
+    patchwork::plot_annotation(
+      title = "Metabolic scores",
+      theme = theme(
+        plot.title = element_text(
+          size = 9,
+          face = "bold",
+          hjust = 0.5,
+          margin = margin(b = 1)
+        )
+      )
+    )
+)
+
+write.csv(
+  fib_umap_scores,
+  file.path(output_dir, "fibmet_umap_imc_protein_scores_six_donors.csv"),
+  row.names = FALSE
+)
+
+save_plot_set(
+  p_fib_scores,
+  "fibmet_imc_protein_score_umaps_six_donors",
+  width = 6.8,
+  height = 4.0
+)
+```
+
+```{r show_fib_scores, echo=FALSE, fig.width=6.8, fig.height=4}
+p_fib_scores
+```
+
+## Protein expression
+
+```{r prepare_fib_protein_expression}
+fib_index <- match(fib_umap$cell, colnames(spe6))
+
+fib_protein_cell <- as.data.frame(
+  t(z6[protein_markers, fib_index, drop = FALSE]),
+  check.names = FALSE
+) %>%
+  tibble::rownames_to_column("cell") %>%
+  dplyr::mutate(
+    sample_id = fib_umap$sample_id[match(cell, fib_umap$cell)],
+    donor = fib_umap$donor[match(cell, fib_umap$cell)],
+    metfiblabel = as.character(fib_umap$metfiblabel[match(cell, fib_umap$cell)])
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(protein_markers),
+    names_to = "marker",
+    values_to = "expression_z"
+  )
+
+fib_protein_sample <- fib_protein_cell %>%
+  dplyr::group_by(sample_id, donor, metfiblabel, marker) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_expression_z = mean(expression_z, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    donor = factor(donor, levels = matched_donor_levels),
+    metfiblabel = factor(metfiblabel, levels = fib_levels),
+    marker = factor(marker, levels = protein_markers)
+  )
+
+fib_protein_stats <- paired_test(
+  fib_protein_sample,
+  feature_col = "marker",
+  value_col = "mean_expression_z",
+  group_col = "metfiblabel",
+  group_1 = "Met_hi_Fib",
+  group_2 = "Other_Fib"
+) %>%
+  dplyr::mutate(marker = factor(feature, levels = protein_markers))
+
+fib_protein_stat_positions <- fib_protein_sample %>%
+  dplyr::group_by(marker) %>%
+  dplyr::summarise(
+    ymax = max(mean_expression_z, na.rm = TRUE),
+    spread = diff(range(mean_expression_z, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    spread = ifelse(spread > 0, spread, 0.2),
+    label_y = ymax + 0.17 * spread
+  ) %>%
+  dplyr::left_join(
+    fib_protein_stats %>%
+      dplyr::select(marker, p_value, n_paired_donors),
+    by = "marker"
+  ) %>%
+  dplyr::mutate(label = format_p(p_value))
+
+p_fib_protein <- ggplot(
+  fib_protein_sample,
+  aes(x = metfiblabel, y = mean_expression_z, fill = metfiblabel)
+) +
+  geom_violin(
+    width = 0.78,
+    alpha = 0.76,
+    color = "grey25",
+    linewidth = 0.28,
+    trim = TRUE
+  ) +
+  geom_boxplot(
+    width = 0.14,
+    outlier.shape = NA,
+    fill = "white",
+    color = "grey20",
+    linewidth = 0.28
+  ) +
+  geom_point(
+    aes(group = donor),
+    position = position_jitter(width = 0.045, height = 0),
+    size = 1.05,
+    color = "black",
+    alpha = 0.9
+  ) +
+  geom_text(
+    data = fib_protein_stat_positions,
+    aes(x = 1.5, y = label_y, label = label),
+    inherit.aes = FALSE,
+    size = 2.05
+  ) +
+  scale_fill_manual(values = fib_colors, drop = FALSE) +
+  facet_wrap(~ marker, nrow = 1, scales = "free_y") +
+  labs(
+    title = "Protein expression",
+    x = NULL,
+    y = "Mean expression z score"
+  ) +
+  theme_bw(base_size = 7.5) +
+  theme(
+    axis.text.x = element_text(size = 6.6, angle = 42, hjust = 1),
+    axis.text.y = element_text(size = 6.2),
+    axis.title.y = element_text(size = 7.4),
+    axis.ticks = element_line(linewidth = 0.3),
+    panel.border = element_rect(fill = NA, color = "grey25", linewidth = 0.35),
+    panel.grid.major = element_line(color = "grey90", linewidth = 0.25),
+    panel.grid.minor = element_line(color = "grey95", linewidth = 0.2),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 8, face = "bold", margin = margin(b = 1)),
+    legend.position = "none",
+    plot.title = element_text(size = 9.5, face = "bold", hjust = 0.5, margin = margin(b = 2)),
+    plot.margin = margin(3, 3, 4, 3)
+  )
+
+write.csv(
+  fib_protein_sample,
+  file.path(output_dir, "fibmet_protein_expression_sample_means_six_donors.csv"),
+  row.names = FALSE
+)
+write.csv(
+  fib_protein_stats,
+  file.path(output_dir, "fibmet_protein_expression_paired_wilcoxon_six_donors.csv"),
+  row.names = FALSE
+)
+
+save_plot_set(
+  p_fib_protein,
+  "fibmet_protein_expression_six_donors",
+  width = 6.8,
+  height = 3.2
+)
+```
+
+```{r show_fib_protein, echo=FALSE, fig.width=6.8, fig.height=3.2}
+p_fib_protein
+```
+
+## Metabolic-marker heatmap
+
+```{r prepare_fib_heatmap}
+fib_marker_cell <- as.data.frame(
+  t(z6[metabolic_markers, fib_index, drop = FALSE]),
+  check.names = FALSE
+) %>%
+  tibble::rownames_to_column("cell") %>%
+  dplyr::mutate(
+    metfiblabel = as.character(fib_umap$metfiblabel[match(cell, fib_umap$cell)])
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(metabolic_markers),
+    names_to = "marker",
+    values_to = "expression_z"
+  )
+
+fib_group_counts <- fib_umap %>%
+  dplyr::count(metfiblabel, name = "n_cells") %>%
+  dplyr::mutate(metfiblabel = as.character(metfiblabel))
+
+fib_heatmap_data <- fib_marker_cell %>%
+  dplyr::group_by(metfiblabel, marker) %>%
+  dplyr::summarise(
+    mean_expression_z = mean(expression_z, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(fib_group_counts, by = "metfiblabel") %>%
+  dplyr::mutate(
+    metfiblabel = factor(metfiblabel, levels = fib_levels),
+    marker = factor(marker, levels = rev(metabolic_markers))
+  )
+
+fib_x_labels <- fib_group_counts %>%
+  dplyr::mutate(label = paste0(metfiblabel, "\n", "n = ", n_cells)) %>%
+  dplyr::select(metfiblabel, label) %>%
+  tibble::deframe()
+
+fib_heatmap_matrix_df <- fib_heatmap_data %>%
+  dplyr::transmute(
+    marker = as.character(marker),
+    metfiblabel = as.character(metfiblabel),
+    mean_expression_z
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = metfiblabel,
+    values_from = mean_expression_z
+  )
+
+fib_heatmap_matrix_df <- fib_heatmap_matrix_df[
+  match(metabolic_markers, fib_heatmap_matrix_df$marker),
+  ,
+  drop = FALSE
+]
+
+fib_heatmap_matrix <- as.matrix(
+  fib_heatmap_matrix_df[, fib_levels, drop = FALSE]
+)
+rownames(fib_heatmap_matrix) <- fib_heatmap_matrix_df$marker
+
+fib_ncells <- stats::setNames(
+  fib_group_counts$n_cells,
+  fib_group_counts$metfiblabel
+)
+
+fib_heatmap_annotation <- data.frame(
+  ids = factor(fib_levels, levels = fib_levels),
+  ncells = as.numeric(fib_ncells[fib_levels]),
+  row.names = fib_levels,
+  check.names = FALSE
+)
+
+fib_heatmap_annotation_colors <- list(
+  ncells = grDevices::colorRampPalette(c("#F7F0F5", "#CC79A7"))(100),
+  ids = fib_colors
+)
+
+fib_heatmap_object <- pheatmap::pheatmap(
+  fib_heatmap_matrix,
+  color = heatmap_palette,
+  breaks = seq(-1, 0.5, length.out = length(heatmap_palette) + 1),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  annotation_col = fib_heatmap_annotation,
+  annotation_colors = fib_heatmap_annotation_colors,
+  show_colnames = FALSE,
+  show_rownames = TRUE,
+  border_color = NA,
+  legend = TRUE,
+  legend_breaks = c(-1, -0.5, 0, 0.5),
+  legend_labels = c("-1.0", "-0.5", "0.0", "0.5"),
+  annotation_legend = TRUE,
+  annotation_names_col = TRUE,
+  fontsize = 7,
+  fontsize_row = 6.2,
+  fontsize_col = 6.2,
+  treeheight_row = 0,
+  treeheight_col = 0,
+  silent = TRUE
+)
+
+p_fib_heatmap <- fib_heatmap_object$gtable
+
+write.csv(
+  fib_heatmap_data,
+  file.path(output_dir, "fibmet_marker_group_means_six_donors.csv"),
+  row.names = FALSE
+)
+
+save_grob_set(
+  p_fib_heatmap,
+  "fibmet_metabolic_marker_heatmap_six_donors",
+  width = 4.8,
+  height = 3.35
+)
+```
+
+```{r show_fib_heatmap, echo=FALSE, fig.width=4.8, fig.height=3.35}
+draw_grob(p_fib_heatmap)
+```
+
+## Six-donor metabolic score comparison
+
+```{r prepare_fib_sample_scores}
+fib_score_cell <- fib_umap_scores %>%
+  dplyr::select(
+    cell,
+    sample_id,
+    donor,
+    metfiblabel,
+    Glycolysis = glycolysis_score,
+    `TCA/OXPHOS` = tca_oxphos_score
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c("Glycolysis", "TCA/OXPHOS"),
+    names_to = "pathway",
+    values_to = "score"
+  ) %>%
+  dplyr::mutate(
+    pathway = factor(pathway, levels = c("Glycolysis", "TCA/OXPHOS")),
+    metfiblabel = factor(metfiblabel, levels = fib_levels)
+  )
+
+fib_score_sample <- fib_score_cell %>%
+  dplyr::group_by(sample_id, donor, metfiblabel, pathway) %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    mean_score = mean(score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    donor = factor(donor, levels = matched_donor_levels),
+    metfiblabel = factor(metfiblabel, levels = fib_levels),
+    pathway = factor(pathway, levels = c("Glycolysis", "TCA/OXPHOS"))
+  )
+
+fib_score_stats <- paired_test(
+  fib_score_sample,
+  feature_col = "pathway",
+  value_col = "mean_score",
+  group_col = "metfiblabel",
+  group_1 = "Met_hi_Fib",
+  group_2 = "Other_Fib"
+) %>%
+  dplyr::mutate(pathway = factor(feature, levels = c("Glycolysis", "TCA/OXPHOS")))
+
+fib_score_stat_positions <- fib_score_sample %>%
+  dplyr::group_by(pathway) %>%
+  dplyr::summarise(
+    ymax = max(mean_score, na.rm = TRUE),
+    spread = diff(range(mean_score, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    spread = ifelse(spread > 0, spread, 0.2),
+    label_y = ymax + 0.16 * spread
+  ) %>%
+  dplyr::left_join(
+    fib_score_stats %>% dplyr::select(pathway, p_value, n_paired_donors),
+    by = "pathway"
+  ) %>%
+  dplyr::mutate(label = format_p(p_value))
+
+make_fib_score_box <- function(current_pathway) {
+  panel_data <- fib_score_sample %>%
+    dplyr::filter(as.character(pathway) == current_pathway)
+
+  panel_stat <- fib_score_stat_positions %>%
+    dplyr::filter(as.character(pathway) == current_pathway)
+
+  ggplot(
+    panel_data,
+    aes(x = metfiblabel, y = mean_score, fill = metfiblabel)
+  ) +
+    geom_boxplot(
+      width = 0.52,
+      outlier.shape = NA,
+      alpha = 0.7,
+      color = "grey30",
+      linewidth = 0.3
+    ) +
+    geom_point(
+      position = position_jitter(width = 0.045, height = 0),
+      size = 1.15,
+      color = "black",
+      alpha = 0.9
+    ) +
+    geom_text(
+      data = panel_stat,
+      aes(x = 1.5, y = label_y, label = label),
+      inherit.aes = FALSE,
+      size = 2.15
+    ) +
+    scale_fill_manual(values = fib_colors, drop = FALSE) +
+    labs(
+      title = current_pathway,
+      x = NULL,
+      y = "Mean IMC protein score"
+    ) +
+    theme_bw(base_size = 7.5) +
+    theme(
+      axis.text.x = element_text(size = 6.6, angle = 20, hjust = 1),
+      axis.text.y = element_text(size = 6.2),
+      axis.title.y = element_text(size = 7),
+      axis.ticks = element_line(linewidth = 0.3),
+      panel.border = element_rect(fill = NA, color = "grey25", linewidth = 0.35),
+      panel.grid.major = element_line(color = "grey90", linewidth = 0.25),
+      panel.grid.minor = element_line(color = "grey95", linewidth = 0.2),
+      legend.position = "none",
+      plot.title = element_text(size = 8.5, face = "bold", hjust = 0.5, margin = margin(b = 1)),
+      plot.margin = margin(2, 3, 3, 3)
+    )
+}
+
+p_fib_sample_glycolysis <- make_fib_score_box("Glycolysis")
+p_fib_sample_tca <- make_fib_score_box("TCA/OXPHOS")
+
+p_fib_sample_scores <- (
+  p_fib_sample_glycolysis /
+    p_fib_sample_tca +
+    patchwork::plot_layout(heights = c(1, 1))
+)
+
+write.csv(
+  fib_score_cell,
+  file.path(output_dir, "fibmet_imc_protein_score_cells_six_donors.csv"),
+  row.names = FALSE
+)
+write.csv(
+  fib_score_sample,
+  file.path(output_dir, "fibmet_imc_protein_score_sample_means_six_donors.csv"),
+  row.names = FALSE
+)
+write.csv(
+  fib_score_stats,
+  file.path(output_dir, "fibmet_imc_protein_score_paired_wilcoxon_six_donors.csv"),
+  row.names = FALSE
+)
+
+save_plot_set(
+  p_fib_sample_scores,
+  "fibmet_imc_protein_score_sample_comparison_six_donors",
+  width = 5.2,
+  height = 3.7
+)
+```
+
+```{r show_fib_sample_scores, echo=FALSE, fig.width=5.2, fig.height=3.7}
+p_fib_sample_scores
+```
+
+# Endothelial cells {.tabset .tabset-pill}
+
+## EndMET UMAP
+
+```{r prepare_ec_umap}
+ec_umap_matrix <- reducedDim(spe6, ec_umap_name)
+ec_umap <- data.frame(
+  cell = colnames(spe6),
+  UMAP1 = ec_umap_matrix[, 1],
+  UMAP2 = ec_umap_matrix[, 2],
+  sample_id = as.character(spe6$sample_id),
+  donor = as.character(spe6$donor),
+  metEClabel = as.character(spe6$metEClabel),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::filter(
+    complete.cases(UMAP1, UMAP2),
+    !is.na(metEClabel),
+    metEClabel %in% ec_levels
+  ) %>%
+  dplyr::mutate(
+    donor = factor(donor, levels = matched_donor_levels),
+    metEClabel = factor(metEClabel, levels = ec_levels)
+  )
+
+if (nrow(ec_umap) != sum(!is.na(spe6$metEClabel))) {
+  stop("EndMET UMAP cell count does not match the finalized EndMET labels.")
+}
+
+write.csv(
+  ec_umap,
+  file.path(output_dir, "endmet_umap_cells_six_donors.csv"),
+  row.names = FALSE
+)
+
+p_ec_umap <- ggplot(
+  ec_umap,
+  aes(x = UMAP1, y = UMAP2, color = metEClabel)
+) +
+  geom_point(size = 0.68, alpha = 0.92, stroke = 0) +
+  scale_color_manual(values = ec_colors, drop = FALSE) +
+  labs(
+    title = "Metabolic phenotypes of\nendothelial cells (End-Met)",
+    x = "UMAP_EC_1",
+    y = "UMAP_EC_2",
+    color = NULL
+  ) +
+  base_umap_theme +
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 2.2, alpha = 1),
+      keyheight = grid::unit(0.28, "cm")
+    )
+  ) +
+  theme(legend.position = "right")
+
+save_plot_set(p_ec_umap, "endmet_umap_six_donors", width = 4.2, height = 3.6)
+```
+
+```{r show_ec_umap, echo=FALSE, fig.width=4.2, fig.height=3.6}
+p_ec_umap
+```
+
+## Metabolic-marker heatmap
+
+```{r prepare_ec_heatmap}
+ec_index <- match(ec_umap$cell, colnames(spe6))
+
+ec_marker_cell <- as.data.frame(
+  t(z6[metabolic_markers, ec_index, drop = FALSE]),
+  check.names = FALSE
+) %>%
+  tibble::rownames_to_column("cell") %>%
+  dplyr::mutate(
+    metEClabel = as.character(ec_umap$metEClabel[match(cell, ec_umap$cell)])
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(metabolic_markers),
+    names_to = "marker",
+    values_to = "expression_z"
+  )
+
+ec_group_counts <- ec_umap %>%
+  dplyr::count(metEClabel, name = "n_cells") %>%
+  dplyr::mutate(metEClabel = as.character(metEClabel))
+
+ec_heatmap_data <- ec_marker_cell %>%
+  dplyr::group_by(metEClabel, marker) %>%
+  dplyr::summarise(
+    mean_expression_z = mean(expression_z, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(ec_group_counts, by = "metEClabel") %>%
+  dplyr::mutate(
+    metEClabel = factor(metEClabel, levels = ec_levels),
+    marker = factor(marker, levels = rev(metabolic_markers))
+  )
+
+ec_x_labels <- ec_group_counts %>%
+  dplyr::mutate(label = paste0(metEClabel, "\n", "n = ", n_cells)) %>%
+  dplyr::select(metEClabel, label) %>%
+  tibble::deframe()
+
+ec_heatmap_matrix_df <- ec_heatmap_data %>%
+  dplyr::transmute(
+    marker = as.character(marker),
+    metEClabel = as.character(metEClabel),
+    mean_expression_z
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = metEClabel,
+    values_from = mean_expression_z
+  )
+
+ec_heatmap_matrix_df <- ec_heatmap_matrix_df[
+  match(metabolic_markers, ec_heatmap_matrix_df$marker),
+  ,
+  drop = FALSE
+]
+
+ec_heatmap_matrix <- as.matrix(
+  ec_heatmap_matrix_df[, ec_levels, drop = FALSE]
+)
+rownames(ec_heatmap_matrix) <- ec_heatmap_matrix_df$marker
+
+ec_ncells <- stats::setNames(
+  ec_group_counts$n_cells,
+  ec_group_counts$metEClabel
+)
+
+ec_heatmap_annotation <- data.frame(
+  ids = factor(ec_levels, levels = ec_levels),
+  ncells = as.numeric(ec_ncells[ec_levels]),
+  row.names = ec_levels,
+  check.names = FALSE
+)
+
+ec_heatmap_annotation_colors <- list(
+  ncells = grDevices::colorRampPalette(c("#F7F0F5", "#CC79A7"))(100),
+  ids = ec_colors
+)
+
+ec_heatmap_object <- pheatmap::pheatmap(
+  ec_heatmap_matrix,
+  color = heatmap_palette,
+  breaks = seq(-1, 1, length.out = length(heatmap_palette) + 1),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  annotation_col = ec_heatmap_annotation,
+  annotation_colors = ec_heatmap_annotation_colors,
+  show_colnames = FALSE,
+  show_rownames = TRUE,
+  border_color = NA,
+  legend = TRUE,
+  legend_breaks = c(-1, -0.5, 0, 0.5, 1),
+  legend_labels = c("-1.0", "-0.5", "0.0", "0.5", "1.0"),
+  annotation_legend = TRUE,
+  annotation_names_col = TRUE,
+  fontsize = 7,
+  fontsize_row = 6.2,
+  fontsize_col = 6.2,
+  treeheight_row = 0,
+  treeheight_col = 0,
+  silent = TRUE
+)
+
+p_ec_heatmap <- ec_heatmap_object$gtable
+
+write.csv(
+  ec_heatmap_data,
+  file.path(output_dir, "endmet_marker_group_means_six_donors.csv"),
+  row.names = FALSE
+)
+
+save_grob_set(
+  p_ec_heatmap,
+  "endmet_metabolic_marker_heatmap_six_donors",
+  width = 4.8,
+  height = 3.35
+)
+```
+
+```{r show_ec_heatmap, echo=FALSE, fig.width=4.8, fig.height=3.35}
+draw_grob(p_ec_heatmap)
+```
+
+# Methods and provenance
+
+- The annotated post-Xenium IMC object supplies the finalized
+  `Rphenograph_500`, `Rphenograph_200EC`, FibMET UMAP, and EndMET UMAP.
+- `ExcludedValidation` (`ExcludedValidation`) is excluded before all
+  calculations shown in this report.
+- Cluster assignments and stored UMAP coordinates are retained so this is a
+  figure-only cohort restriction, not a new clustering analysis.
+- Marker-wise z scores are recalculated from the IMC `asinh` assay using only
+  the six retained donors.
+- Glycolysis is the mean of GLUT1, HK1, PFKL1_PFKM, PKM2, LDHA, and GAPDH.
+- TCA/OXPHOS is the mean of CS, OGDH, ATP5A, and SDHA.
+- Donor-level comparisons use paired Wilcoxon tests on the six donor means.
+- Figure-ready exports preserve the original categorical palettes and compact
+  panel ratios. IMC score UMAPs are clipped to `[-1, 1]`; the FibMET heatmap
+  is clipped to `[-1, 0.5]`, and the EndMET heatmap is clipped to `[-1, 1]`.
+
+```{r provenance_table}
+provenance <- data.frame(
+  item = c("Annotated IMC object", paste0("Source script ", seq_along(source_scripts))),
+  path = c(imc_file, source_scripts),
+  exists = file.exists(c(imc_file, source_scripts)),
+  stringsAsFactors = FALSE
+)
+
+write.csv(provenance, file.path(output_dir, "source_provenance.csv"), row.names = FALSE)
+kable(provenance, caption = "Source provenance")
+```

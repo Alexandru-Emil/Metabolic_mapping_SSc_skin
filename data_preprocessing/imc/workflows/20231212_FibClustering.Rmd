@@ -1,0 +1,80 @@
+---
+title: "Expression heatmap on SSc fibroblast clusters"
+author: "Yi-Nan Li"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+source("data_preprocessing/common/config.R")
+knitr::opts_chunk$set(echo = TRUE, dev = "pdf")
+```
+
+## Object import
+
+Importing the objects from previous analysis. <br>
+<br>
+**!! Check HDF5 files directories to import the images in on_disk mode !!** <br>
+
+Printing metadata of the images.
+```{r data-import, message=FALSE, cache=TRUE}
+library(SpatialExperiment)
+library(cytomapper)
+library(HDF5Array)
+spe <- readr::read_rds(project_path("external/spe_gate_cluster_VSMCs.rds"))
+spe
+
+# ### Set HDF5 file path here ### 
+# cat("**!! Check HDF5 directory: ", HDF5.path, "!!**")
+# images <- loadImages(HDF5.path, on_disk = TRUE,  h5FilesPath = HDF5.path)
+# 
+# # assign metadata to the images
+# mcols(images) <- mcols(masks)
+# channelNames(images) <- names(spe)
+# data.frame(mcols(images))
+# images
+```
+
+## Gating by `cytomapper shiny`
+
+Cell gating was performed under interactive interface.
+
+```{r cytomapper-shiny}
+library(cytomapper)
+if (interactive()) {
+    cytomapperShiny(object = spe, mask = masks,  
+                    cell_id = "ObjectNumber", img_id = "sample_id")
+}
+```
+
+## Expression heatmaps
+
+```{r heatmap}
+library(SpatialExperiment)
+library(dittoSeq)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggsci)
+mt <- readr::read_csv(project_path("external/quantile_Stroma"))
+
+cluster.channels <- c("PU.1", "Sox9", "SM22", "TFAM", "PDGFRa", "a_sma", "PDGFRb",
+                      "FSP_1", "PGC_1a", "Gli1", "Podoplanin", "Thy1", "Cadherin_11",
+                      "Collagen", "ADRP", "ADAM12", "S1PR", "PI16", "FAP")
+Heatmap(t(mt[,cluster.channels]), show_column_names = FALSE, name = "quantile",
+        cluster_columns = cluster_within_group(t(mt[,cluster.channels]), as.character(mt$pg_Stroma)),
+        top_annotation = HeatmapAnnotation(cluster = as.character(mt$pg_Stroma)),
+        column_split = length(unique(mt$pg_Stroma)))
+clusters <- mt$pg_Stroma
+mt <-  pheatmap:::scale_rows(t(mt[,cluster.channels]))
+
+Heatmap(mt, show_column_names = FALSE, name = "z-score",
+        cluster_columns = cluster_within_group(mt, as.character(clusters)),
+        top_annotation = HeatmapAnnotation(cluster = as.character(clusters)),
+        column_split = length(unique(clusters)))
+
+```
+
+

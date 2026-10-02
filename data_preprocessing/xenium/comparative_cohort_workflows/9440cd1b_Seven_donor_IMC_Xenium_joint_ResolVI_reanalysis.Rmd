@@ -1,0 +1,613 @@
+---
+title: "Seven-donor IMC-Xenium reanalysis with joint ResolVI"
+author: "Codex"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    self_contained: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+
+report_dir <- normalizePath(
+  dirname(knitr::current_input(dir = TRUE)),
+  winslash = "/",
+  mustWork = TRUE
+)
+output_root <- file.path(report_dir, "outputs")
+panel_dir <- file.path(output_root, "seven_donor_manuscript_panels")
+table_dir <- file.path(panel_dir, "tables")
+qc_plot_dir <- file.path(output_root, "annotation_qc_plots")
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(knitr)
+  library(jsonlite)
+})
+
+show_panel <- function(stem) {
+  knitr::include_graphics(file.path(panel_dir, paste0(stem, ".png")))
+}
+
+strategy_metrics <- read.csv(
+  file.path(output_root, "joint_resolvi_annotation_summary.csv"),
+  check.names = FALSE
+)
+strategy_decision <- read.csv(
+  file.path(output_root, "annotation_strategy_decision.csv"),
+  check.names = FALSE
+)
+marker_specificity <- read.csv(
+  file.path(output_root, "ssc230_annotation_marker_specificity_summary.csv"),
+  check.names = FALSE
+)
+panel_audit <- read.csv(
+  file.path(panel_dir, "seven_donor_panel_cell_audit.csv"),
+  check.names = FALSE
+)
+join_audit <- read.csv(
+  file.path(output_root, "seven_donor_join_audit.csv"),
+  check.names = FALSE
+)
+fib_cor_stats <- read.csv(
+  file.path(
+    table_dir,
+    "fibmet_imc_scmetabolism_correlation_stats_seven_donors.csv"
+  ),
+  check.names = FALSE
+)
+ec_cor_stats <- read.csv(
+  file.path(
+    table_dir,
+    "endmet_imc_scmetabolism_correlation_stats_seven_donors.csv"
+  ),
+  check.names = FALSE
+)
+training_manifest <- jsonlite::read_json(
+  file.path(output_root, "resolvi_training_manifest.json"),
+  simplifyVector = TRUE
+)
+annotation_manifest <- jsonlite::read_json(
+  file.path(output_root, "joint_resolvi_annotation_manifest.json"),
+  simplifyVector = TRUE
+)
+
+metric_value <- setNames(strategy_metrics$value, strategy_metrics$metric)
+panel_audit_value <- setNames(panel_audit$n_cells, panel_audit$population)
+ssc230_matched <- join_audit$n_matched_imc[join_audit$donor == "ExcludedValidation"]
+major_lodo_accuracy <- unname(metric_value[[
+  paste(
+    "Six-donor leave-one-donor-out major-label accuracy in joint",
+    "ResolVI latent"
+  )
+]])
+major_lodo_balanced_accuracy <- unname(metric_value[[
+  paste(
+    "Six-donor leave-one-donor-out major-label balanced accuracy in",
+    "joint ResolVI latent"
+  )
+]])
+fib_lodo_accuracy <- unname(metric_value[[
+  paste(
+    "Six-donor leave-one-donor-out fibroblast-subtype accuracy in",
+    "joint ResolVI latent"
+  )
+]])
+ec_lodo_accuracy <- unname(metric_value[[
+  paste(
+    "Six-donor leave-one-donor-out endothelial-subtype accuracy in",
+    "joint ResolVI latent"
+  )
+]])
+ssc230_major_agreement <- unname(metric_value[[
+  paste(
+    "ExcludedValidation major-label agreement: joint ResolVI latent mapping",
+    "versus prior RNA-anchor mapping"
+  )
+]])
+ssc230_subtype_agreement <- unname(metric_value[[
+  paste(
+    "ExcludedValidation Fib/EC subtype agreement: joint ResolVI latent mapping",
+    "versus prior RNA-anchor mapping"
+  )
+]])
+cluster_majority_accuracy <- unname(metric_value[[
+  "Six-donor major-label accuracy of cluster-majority sensitivity annotation"
+]])
+format_percent <- function(value) {
+  if (is.na(value)) "NA" else sprintf("%.1f%%", 100 * value)
+}
+training_table <- data.frame(
+  parameter = c(
+    "Model",
+    "Cells",
+    "Genes",
+    "Latent dimensions",
+    "Epochs",
+    "Count layer",
+    "Batch key",
+    "Categorical covariate",
+    "Spatial representation",
+    "Input SHA-256",
+    "scvi-tools",
+    "PyTorch"
+  ),
+  value = c(
+    "Unsupervised ResolVI",
+    training_manifest$n_cells,
+    training_manifest$n_genes,
+    training_manifest$config$n_latent,
+    training_manifest$config$max_epochs,
+    training_manifest$config$counts_layer,
+    training_manifest$config$sample_key,
+    training_manifest$config$slide_key,
+    training_manifest$config$spatial_key,
+    training_manifest$config$input_sha256,
+    training_manifest$versions$scvi_tools,
+    training_manifest$versions$torch
+  ),
+  stringsAsFactors = FALSE
+)
+```
+
+<style>
+body {
+  color: #222;
+  background: #fff;
+}
+.main-container {
+  max-width: 1240px;
+}
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.5rem auto 1.25rem auto;
+  background: #fff;
+}
+.tab-content {
+  padding-top: 0.75rem;
+}
+table {
+  font-size: 0.92rem;
+}
+.method-note {
+  border-left: 4px solid #4E79A7;
+  padding: 0.55rem 0.85rem;
+  margin: 0.8rem 0 1.2rem 0;
+  background: #F6F8FA;
+}
+</style>
+
+# Technical summary
+
+ExcludedValidation was added to the finalized six-donor Xenium SFE after applying its
+recorded QC flag, yielding **21,271 Xenium cells from seven donors**. Of the
+retained ExcludedValidation cells, **`r ssc230_matched`** have validated IMC-Xenium shared
+identifiers;
+**`r panel_audit_value[["ExcludedValidation paired FibMET"]]`** contribute to paired
+FibMET analyses and **`r panel_audit_value[["ExcludedValidation paired EndMET"]]`**
+contribute to paired EndMET analyses.
+
+An unsupervised ResolVI model was fitted jointly to raw Xenium counts and
+spatial coordinates from all seven donors. `SampleId` was used as the batch
+key, and the two acquisition slides reconstructed from the original ResolVI
+input H5AD were included as a categorical covariate. The model generated a
+30-dimensional latent representation, normalized expression
+(`scvi_norm_expr`), and posterior-median corrected expression
+(`px_rate_q50`).
+
+The final manuscript labels deliberately separate unsupervised model fitting
+from biological annotation. The curated labels of the original six donors are
+preserved exactly. ExcludedValidation alone is mapped in the all-seven ResolVI latent by a
+k-nearest-neighbor classifier whose settings were selected by
+leave-one-donor-out label-transfer validation across the six reference donors.
+All seven donors contribute to model training and latent geometry, but ExcludedValidation
+labels are excluded from classifier training.
+
+The fixed-latent leave-one-donor-out accuracy was
+**`r format_percent(major_lodo_accuracy)`** for major populations,
+with **`r format_percent(major_lodo_balanced_accuracy)`** balanced accuracy,
+**`r format_percent(fib_lodo_accuracy)`** for fibroblast subtypes, and
+**`r format_percent(ec_lodo_accuracy)`** for endothelial subtypes. ExcludedValidation
+agreement with the prior Seurat RNA-anchor mapping was
+**`r format_percent(ssc230_major_agreement)`** for broad labels and
+**`r format_percent(ssc230_subtype_agreement)`** for comparable Fib/EC
+subtypes. These values quantify transfer stability; they are not evidence that
+the two mappings are interchangeable.
+
+Unsupervised Leiden cluster-majority labels are retained as a sensitivity
+output only. Their six-donor major-label accuracy was
+**`r format_percent(cluster_majority_accuracy)`**, and the partition merged
+rare lineages and several fine subtypes. It is therefore not used to overwrite
+the curated six-donor labels.
+
+All applicable IMC-only, paired IMC-Xenium, scMetabolism, ECM, Sankey, and
+Xenium-only annotation panels were regenerated with all seven donors. Every
+panel is exported as PNG, PDF, and SVG using the original manuscript palette,
+fixed score ranges, and panel dimensions.
+
+# Seven-donor Xenium annotation {.tabset .tabset-pill}
+
+## Figure S6A: major populations
+
+The all-seven ResolVI embedding is colored with the final manuscript labels:
+curated labels for the original six donors and joint-ResolVI latent mapping for
+ExcludedValidation. The display therefore shows the new model geometry without redefining
+the previously curated cells.
+
+```{r xenium_major_umap}
+show_panel("xenium_major_umap_seven_donors")
+```
+
+## Figure S6B: major markers
+
+Dot size is the percentage of cells expressing each gene and color is the
+unscaled mean log-normalized Xenium expression. The lineage-marker diagonal
+provides an independent visual check of the final population labels.
+
+```{r xenium_major_dotplot}
+show_panel("xenium_major_marker_dotplot_seven_donors")
+```
+
+# Fibroblast panels {.tabset .tabset-pill}
+
+## FibMET UMAP
+
+The finalized IMC FibMET embedding now includes all seven matched donors while
+retaining the original salmon/cyan phenotype colors and panel ratio.
+
+```{r fibmet_umap}
+show_panel("fibmet_umap_seven_donors")
+```
+
+## IMC metabolic-score UMAPs
+
+The glycolysis and TCA/OXPHOS protein scores are means of the same prespecified
+IMC marker sets used previously. Both panels retain the fixed -1 to 1 color
+range so the seven-donor result is visually comparable with the original.
+
+```{r fibmet_score_umaps}
+show_panel("fibmet_imc_score_umaps_seven_donors")
+```
+
+## Protein expression
+
+Each black point is one donor-level group mean. The displayed paired Wilcoxon
+tests therefore use the donor, rather than the cell, as the replicate.
+
+```{r fibmet_protein}
+show_panel("fibmet_protein_expression_seven_donors")
+```
+
+## IMC metabolic heatmap
+
+Mean IMC marker z scores are shown without reclustering the two FibMET columns.
+The color range is fixed to -1 to 0.5, matching the original figure contract.
+
+```{r fibmet_heatmap}
+show_panel("fibmet_imc_heatmap_seven_donors")
+```
+
+## Donor-level IMC scores
+
+The seven points in each FibMET condition are donor-level means. The paired
+test uses donors represented in both conditions.
+
+```{r fibmet_sample_scores}
+show_panel("fibmet_sample_scores_seven_donors")
+```
+
+## Xenium gene expression
+
+Only fibroblasts with validated paired IMC labels are included. Dot size is
+the percentage expressed; color is gene-wise scaled mean expression across
+`Other_Fib` and `Met_hi_Fib`, clipped to -1 to 1 to preserve the figure style.
+
+```{r fibmet_gene_dotplot}
+show_panel("fibmet_xenium_gene_dotplot_seven_donors")
+```
+
+## Xenium-to-IMC Sankey
+
+The widths count paired cells flowing from each final Xenium fibroblast subtype
+to its IMC FibMET label. ExcludedValidation contributes through its validated shared cell
+identifiers.
+
+```{r fibmet_sankey}
+show_panel("fibmet_xenium_to_imc_sankey_seven_donors")
+```
+
+## ECM scores
+
+Color and size show the mean core-matrisome AUCell score within each Xenium
+fibroblast subtype and paired IMC FibMET state. The score was recomputed from
+the joined seven-donor SFE.
+
+```{r fibmet_ecm}
+show_panel("fibmet_ecm_dotplot_seven_donors")
+```
+
+## scMetabolism
+
+Glycolysis and citrate-cycle AUCell scores were recomputed from all annotated
+seven-donor Xenium fibroblasts, then summarized only across cells carrying a
+paired FibMET label. The white-to-red scale shows the unscaled group mean.
+
+```{r fibmet_scmetabolism}
+show_panel("fibmet_scmetabolism_dotplot_seven_donors")
+```
+
+## Single-cell IMC-Xenium correlation
+
+Each point is one cell with a validated shared identifier. The weak correlations
+show that the IMC protein marker averages and transcript-based pathway AUCell
+scores measure related but non-equivalent biological layers.
+
+```{r fibmet_correlation}
+show_panel("fibmet_imc_scmetabolism_correlation_seven_donors")
+```
+
+```{r fibmet_correlation_table}
+kable(
+  fib_cor_stats,
+  digits = 3,
+  caption = "Fibroblast matched-cell Spearman correlations"
+)
+```
+
+# Endothelial panels {.tabset .tabset-pill}
+
+## EndMET UMAP
+
+The finalized IMC EndMET embedding includes all seven donors and retains the
+original orange/blue metabolic-state colors.
+
+```{r endmet_umap}
+show_panel("endmet_umap_seven_donors")
+```
+
+## IMC metabolic heatmap
+
+Mean IMC marker z scores are shown with a fixed -1 to 1 range and the same
+annotation-to-heatmap ratio as the original EndMET panel.
+
+```{r endmet_heatmap}
+show_panel("endmet_imc_heatmap_seven_donors")
+```
+
+## EndMET scMetabolism
+
+The seven-donor Xenium glycolysis and citrate-cycle AUCell scores are summarized
+over ECs with a paired IMC EndMET label. The two groups use a common unscaled
+white-to-red color legend.
+
+```{r endmet_scmetabolism}
+show_panel("endmet_scmetabolism_dotplot_seven_donors")
+```
+
+## Xenium EC UMAP
+
+The EC-only UMAP is calculated from the joint ResolVI latent and colored by the
+reference-preserving final EC subtype labels.
+
+```{r xenium_ec_umap}
+show_panel("xenium_ec_umap_seven_donors")
+```
+
+## Xenium EC markers
+
+Dot size is percent expressed and color is unscaled mean log-normalized
+expression. The same white-to-red presentation and marker order are used as in
+the original figure.
+
+```{r xenium_ec_dotplot}
+show_panel("xenium_ec_gene_dotplot_seven_donors")
+```
+
+## EC ECM distributions
+
+Single-cell core-matrisome and collagen AUCell distributions are shown across
+the six final Xenium EC labels. These are descriptive cell-level distributions
+and do not treat cells as independent donor replicates.
+
+```{r xenium_ec_ecm}
+show_panel("xenium_ec_ecm_violin_seven_donors")
+```
+
+## ACTA2_EC-to-EndMET Sankey
+
+Paired ACTA2_EC cells are mapped to the two IMC EndMET states. Donor
+contributions follow the joint ResolVI EC labels and validated shared
+IMC-Xenium identifiers.
+
+```{r acta2_sankey}
+show_panel("acta2_ec_to_endmet_sankey_seven_donors")
+```
+
+## ACTA2_EC scMetabolism
+
+All final Xenium ECs are split into ACTA2_EC and the remaining ECs. The score
+matrix and plotting geometry are identical to the other seven-donor
+scMetabolism panels.
+
+```{r acta2_scmetabolism}
+show_panel("acta2_ec_scmetabolism_dotplot_seven_donors")
+```
+
+## Single-cell IMC-Xenium correlation
+
+The paired EC correlations are close to zero in both EndMET states. The panel is
+retained as a cross-modal concordance check rather than evidence that the two
+assays produce interchangeable pathway measurements.
+
+```{r endmet_correlation}
+show_panel("endmet_imc_scmetabolism_correlation_seven_donors")
+```
+
+```{r endmet_correlation_table}
+kable(
+  ec_cor_stats,
+  digits = 3,
+  caption = "Endothelial matched-cell Spearman correlations"
+)
+```
+
+# Joint ResolVI annotation validation {.tabset .tabset-pill}
+
+## Concordance
+
+These metrics quantify three distinct questions: how well labels transfer
+between held-out reference donors in the fixed joint latent, how the new
+ExcludedValidation latent mapping agrees with the previous RNA-anchor mapping, and how much
+information would be lost by using unsupervised cluster-majority labels as the
+final annotation. The strategy decision is recorded alongside the numerical
+audit.
+
+```{r annotation_concordance}
+kable(strategy_metrics, digits = 3)
+kable(strategy_decision)
+```
+
+## Major-marker QC
+
+```{r major_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_major_marker_qc.png"))
+```
+
+## Fibroblast-marker QC
+
+The marker panel compares the new ExcludedValidation joint-ResolVI latent mapping with the
+prior RNA-anchor labels. Dot size is the fraction expressing each canonical
+marker and color is scaled mean observed Xenium expression.
+
+```{r fibroblast_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_fibroblast_marker_qc.png"))
+```
+
+## Endothelial-marker QC
+
+The marker panel provides the corresponding comparison for endothelial
+subtypes and makes absent or sparsely represented ExcludedValidation subtypes visible.
+
+```{r endothelial_marker_qc}
+knitr::include_graphics(file.path(qc_plot_dir, "ssc230_endothelial_marker_qc.png"))
+```
+
+## Specificity summary
+
+```{r marker_specificity_table}
+kable(marker_specificity, digits = 3)
+```
+
+# Scope and methods
+
+The ExcludedValidation portable SFE was restricted to `qc_pass == TRUE` before joining.
+The final object contains the identical 5,099-gene row universe for all seven
+donors. Counts, logcounts, centroid geometries, and cell-segmentation geometries
+were retained.
+
+The joint model was trained with scvi-tools `r training_manifest$versions$scvi_tools`
+for `r training_manifest$config$max_epochs` epochs. ResolVI constructed spatial
+neighbors separately within each donor from `X_spatial`. UMAP, Leiden
+sensitivity clusters, and label-transfer classifiers use all 30 latent
+dimensions.
+
+For final annotation, major-population, fibroblast-subtype, and
+endothelial-subtype k-nearest-neighbor classifiers were tuned by withholding
+one of the six reference donors at a time. This is label-transfer validation
+within a fixed all-seven latent, not a full model-refit cross-validation:
+the held-out donor still contributed unlabeled counts and spatial context when
+ResolVI was trained. After selecting `k` and distance weighting, the mapper was
+trained on all six curated donors and applied only to ExcludedValidation. Unsupervised
+Leiden partitions were evaluated separately and retained as sensitivity
+columns.
+
+scMetabolism was run with AUCell and the KEGG pathway collection on all final
+Xenium fibroblasts and ECs. ECM scores were calculated with AUCell from the
+Naba core-matrisome network. IMC glycolysis and TCA/OXPHOS scores are means of
+the prespecified z-scored protein marker sets.
+
+```{r cohort_tables}
+kable(join_audit, caption = "Joined seven-donor Xenium SFE")
+kable(panel_audit, caption = "Cell denominators used in regenerated panels")
+```
+
+# ResolVI model provenance
+
+The candidate checkpoint recovered from Yi-Nan Li's `sscskin_metabolic`
+project is a supervised scANVI model trained on the Haniffa skin fibroblast
+atlas. It is not the model that generated the manuscript Xenium embedding.
+The available six-donor workflow documentation instead records `X_resolvi`
+and `scvi_norm_expr` from an unsupervised ResolVI H5AD. Accordingly, the
+seven-donor model reported here is an unsupervised ResolVI refit rather than
+an extension of the unrelated fibroblast-atlas scANVI classifier.
+
+Other recovered ResolVI artifacts belonged to unrelated datasets and were
+excluded. The production input is exclusively the checksummed 21,271-cell
+seven-donor SFE distributed with this report.
+
+```{r model_provenance}
+kable(training_table, caption = "Joint seven-donor ResolVI training contract")
+```
+
+The saved model directory, console training log, parsed ELBO trajectory, H5AD,
+input and output checksums, annotation resolution grids, cluster-label maps,
+and package lock file are distributed with this report. The annotation
+manifest records the exact model H5AD checksum used to make the labels.
+
+# Limitations and robustness
+
+<div class="method-note">
+The original six-donor training command and trained H5AD were not recoverable.
+This is a new unsupervised ResolVI fit of the correct seven-donor SFE, using the
+documented 30-dimensional latent, raw counts, spatial coordinates, donor batch,
+and acquisition-slide covariate. It is therefore a method-equivalent refit, not
+a byte-for-byte continuation of unverifiable original hyperparameters.
+</div>
+
+The joint latent does not recover every curated subtype as a clean unsupervised
+cluster. In particular, cluster-majority annotation merges rare major
+lineages and has inadequate fine-subtype retention. For that reason, the
+cluster calls are a sensitivity analysis and no original six-donor cell is
+relabelled in the final SFE. ExcludedValidation subtype conclusions should be interpreted
+alongside the leave-one-donor-out performance, mapping confidence, agreement
+tables, and marker-QC panels.
+
+The targeted Xenium panel does not pass scMetabolism's coverage threshold for a
+separate KEGG oxidative-phosphorylation gene set. The transcriptomic
+`TCA / OXPHOS` display row is therefore the citrate-cycle score used in the
+previous analysis; no missing OXPHOS value was imputed. The IMC protein score
+does include the prespecified TCA/OXPHOS protein markers.
+
+Cell-level distribution tests and correlations can be affected by donor
+composition and within-donor dependence. Donor-level plots are shown where
+the scientific comparison is inferential; the matched-cell correlations are
+descriptive cross-modal checks.
+
+# Recommended manuscript use
+
+Use these panels when the manuscript question requires all seven donors to
+contribute to one spatial generative model while preserving the established
+six-donor annotation. State explicitly that ResolVI training was unsupervised,
+that the six curated donors were unchanged, and that only ExcludedValidation was mapped in
+the joint latent. Report the sample-aware transfer metrics and the agreement
+with the prior RNA-anchor mapping rather than implying that unsupervised
+clusters reproduced every curated subtype.
+
+# Further questions
+
+Manual review remains appropriate before treating any ExcludedValidation fine-subtype
+assignment as definitive. Recovery of the original training command would
+permit a stricter hyperparameter-matched sensitivity fit, but is not required
+to rerun the model and report delivered here.

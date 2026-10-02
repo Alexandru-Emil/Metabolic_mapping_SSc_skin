@@ -1,0 +1,129 @@
+---
+title: "DESeq2 ComBat-seq DEG and GO analysis"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    theme: cosmo
+    df_print: paged
+params:
+  data_path: ""
+  out_dir: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+report <- readRDS(params$data_path)
+out_dir <- params$out_dir
+fig <- function(name) knitr::include_graphics(file.path(out_dir, 'figures', name))
+fmt_int <- function(x) format(x, big.mark = ',', scientific = FALSE, trim = TRUE)
+deg_summary <- report$deg_summary
+top_degs <- report$top_degs
+go_summary <- report$go_summary
+```
+
+## Technical summary
+
+This report uses **DESeq2 on ComBat-seq counts** as requested. DEGs are defined as genes with FDR < 0.05 and absolute fold-change >= 1.5, equivalent to |log2FC| >= 0.585. GO results use over-representation analysis on the resulting DEG sets, with the filtered RNA-seq gene universe as background.
+
+DESeq2 Wald tests were run on condition-preserving ComBat-seq PCS-corrected counts with design ~ condition. The analysis uses the cached ComBat-seq matrix created with PCS as batch and condition preserved.
+
+```{r deg-summary}
+show <- deg_summary[, c('contrast_label', 'genes_tested', 'up', 'down', 'total_deg', 'min_fdr', 'top_gene', 'top_gene_FDR')]
+colnames(show) <- c('Contrast', 'Genes tested', 'Up', 'Down', 'Total DEG', 'Minimum FDR', 'Top gene', 'Top gene FDR')
+knitr::kable(show, digits = 4)
+```
+
+## DEG burden and direction are threshold-dependent
+
+The bar chart counts only genes passing the requested threshold. Direction is based on the sign of the treatment-versus-control log2 fold-change.
+
+```{r deg-bar, out.width='100%'}
+fig(report$figures$deg_bar)
+```
+
+## Volcano plots show the selected DEG boundary
+
+These volcano plots place the requested FDR and fold-change cutoffs directly on the all-gene result. Genes labeled in the plot are the strongest DEG calls by FDR and effect size.
+
+### 2DG + OX versus control
+
+```{r volcano-2dg, out.width='100%'}
+fig(report$figures$volcano[['2DG_vs_C']])
+```
+
+### LDHA + OX versus control
+
+```{r volcano-ldha, out.width='100%'}
+fig(report$figures$volcano[['LDHA_vs_C']])
+```
+
+## PCS-corrected expression separates top DEG patterns
+
+The heatmap uses ComBat-seq PCS-corrected logCPM for the top DEG set across both contrasts. It is an expression-display figure; exact statistics should be read from the all-gene and DEG tables.
+
+```{r heatmap, out.width='100%'}
+fig(report$figures$heatmap)
+```
+
+```{r top-degs}
+td <- top_degs[, c('contrast_label', 'direction', 'gene_label', 'GENENAME', 'logFC', 'PValue', 'FDR')]
+colnames(td) <- c('Contrast', 'Direction', 'Gene', 'Gene name', 'log2FC', 'P value', 'FDR')
+knitr::kable(td, digits = 4)
+```
+
+## GO enrichment uses the selected DEG sets
+
+GO over-representation analysis was run separately for all, up-regulated, and down-regulated DEG sets. The plotted terms show GO Biological Process results; full BP, MF, and CC tables are included in the workbook and CSV outputs.
+
+### 2DG + OX versus control
+
+```{r go-2dg, out.width='100%'}
+fig(report$figures$go_bp[['2DG_vs_C']])
+```
+
+### LDHA + OX versus control
+
+```{r go-ldha, out.width='100%'}
+fig(report$figures$go_bp[['LDHA_vs_C']])
+```
+
+```{r go-summary}
+if (nrow(go_summary) > 0) {
+  gs <- go_summary[, c('contrast_label', 'direction', 'ont', 'Description', 'GeneRatio', 'Count', 'p.adjust', 'qvalue')]
+  colnames(gs) <- c('Contrast', 'DEG set', 'Ontology', 'GO term', 'Gene ratio', 'Genes', 'FDR', 'q value')
+  knitr::kable(gs, digits = 4)
+} else {
+  cat('No GO terms were returned for the selected DEG sets.')
+}
+```
+
+## Scope, data, and metric definitions
+
+- Comparisons: 2DG + OX vs control and LDHA + OX vs control.
+- Batch correction: ComBat-seq was run with PCS as the batch variable and condition preserved.
+- DEG threshold: FDR < 0.05 and FC >= 1.5, implemented as |log2FC| >= log2(1.5).
+- GO universe: all retained, filtered RNA-seq genes that could be mapped to Entrez identifiers.
+- Direction: positive log2FC indicates higher expression in the treatment condition relative to control.
+
+## Methodology and model contract
+
+- DESeq2 Wald tests were run on condition-preserving ComBat-seq PCS-corrected counts with design ~ condition.
+- DEG tables were filtered after model fitting; all-gene results are exported so alternative thresholds remain auditable.
+- GO over-representation analysis used `clusterProfiler::enrichGO` with Benjamini-Hochberg adjustment and the filtered expressed gene universe.
+- Reports and tables are generated from cached RDS objects so reruns skip unchanged upstream QC and DEG stages.
+
+## Limitations and interpretation
+
+- These are method-specific reports requested on ComBat-seq corrected counts. They should not be mixed without qualification with the primary edgeR QL model that includes PCS directly in the negative-binomial design.
+- Correcting counts before DEG testing can alter variance structure and may make corrected-count screens more permissive than a paired count model.
+- After ComBat-seq correction, the pair/block structure is not directly modeled in the exact-test or condition-only DESeq2 comparison.
+- GO over-representation results depend on DEG threshold, annotation coverage, and redundancy among GO terms.
+- Upstream FASTQ/BAM QC, RNA quality, alignment rates, strandedness, and library-prep covariates were not supplied.
+
+## Recommended next steps
+
+- Use the method-specific DEG tables in this report when the manuscript or supplement explicitly refers to ComBat-seq corrected-count DEG analysis.
+- Prioritize genes and GO terms that are robust across the edgeR exact and DESeq2 ComBat-seq reports.
+- Keep the previous edgeR QL PCS-adjusted analysis as the conservative primary inferential reference, and present these results as requested sensitivity or corrected-count reports.
