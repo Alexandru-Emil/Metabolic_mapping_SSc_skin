@@ -2,6 +2,8 @@
 
 Analysis code for **Single-cell mapping of the metabolic landscape of skin fibrosis in systemic sclerosis**, by Devakumar, Li, Filla, Rius Rigau, Györfi, Zhi, Zhu, Qi, Tümerdem, Neelagar, Wang, Liang, Bergmann, Schett, Distler and Matei.
 
+Archived code version 1.0.0: [10.5281/zenodo.23107219](https://doi.org/10.5281/zenodo.23107219). Figure source data: [10.5281/zenodo.23107366](https://doi.org/10.5281/zenodo.23107366).
+
 ## Organization
 
 - [`data_preprocessing`](data_preprocessing/README.md): original IMC, Xenium, shared-modality, bulk RNA-seq, functional and MintFlow workflows, organized by purpose. [Source index](data_preprocessing/SOURCE_INDEX.md).
@@ -14,7 +16,7 @@ Use R 4.4.1 and the package versions in [`figure_regeneration/environment.lock`]
 Unzip `Source_data_repository_20261002.zip` into an external directory. Its SHA-256 is:
 
 ```text
-0ca3798b4e8454c40b34445a9261ac2af4c327beb4909e570f217bf62f874640
+0b26712b2ce350852e102f751cc2a8206c41bd7cc415aa4b21467a59349ba7e6
 ```
 
 From the repository root, run:

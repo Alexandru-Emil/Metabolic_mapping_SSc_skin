@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: >-
   If you use this code, please cite this software repository and the
   associated study, Single-cell mapping of the metabolic landscape of skin
-  fibrosis in systemic sclerosis. Cite the archived release DOI when available.
+  fibrosis in systemic sclerosis.
 type: software
 title: "Metabolic mapping of SSc skin: analysis and figure regeneration code"
 authors:
@@ -15,6 +15,9 @@ authors:
 repository-code: "https://github.com/Alexandru-Emil/Metabolic_mapping_SSc_skin"
 url: "https://github.com/Alexandru-Emil/Metabolic_mapping_SSc_skin"
 license: MIT
+version: 1.0.0
+date-released: 2026-10-02
+doi: 10.5281/zenodo.23107219
 abstract: >-
   Analysis workflows for imaging mass cytometry, Xenium and supporting
   experiments in systemic sclerosis skin, with figure-panel scripts that

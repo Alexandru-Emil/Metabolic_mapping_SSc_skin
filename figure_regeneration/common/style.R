@@ -29,3 +29,24 @@ display_labels <- function(x) {
   out <- gsub("_", " ", out, fixed = TRUE)
   out
 }
+
+# Display names retained from the original cell-state label lookup.
+state_labels <- c(
+  "stromal_1" = "TCA/OXPHOS (hi) PGC-1α (hi)_Fib",
+  "stromal_2" = "Met (hi)_Fib",
+  "stromal_3" = "TCA/OXPHOS (int) PGC-1α (hi)_Fib",
+  "stromal_4" = "pmTOR (hi) CD98 (hi)_Fib",
+  "stromal_5" = "Met (low)_Fib",
+  "stromal_6" = "Glycolysis (int) CS (hi) OGDH (low)_Fib",
+  "stromal_7" = "Glut (hi)_Fib",
+  "stromal_8" = "Glycolysis (int) PGC-1α (low) FAO (low)_Fib",
+  "CD31_1" = "Met (low)_EC",
+  "CD31_2" = "TCA/OXPHOS (hi) PGC-1α (hi)_EC",
+  "CD31_3" = "Met (hi)_EC",
+  "CD31_4" = "pmTOR (hi) CD98 (hi)_EC",
+  "CD31_5" = "Glycolysis (hi) TCA/OXPHOS (int) PPP (hi)_EC",
+  "CD45_CD68_1" = "Met (hi)_Mf",
+  "CD45_CD68_2" = "Met (low)_Mf",
+  "CD45_CD68_3" = "Glycolysis (low) TCA/OXPHOS (hi)_Mf",
+  "CD45_CD68_4" = "Glycolysis (hi) TCA/OXPHOS (hi)_Mf"
+)

@@ -303,10 +303,6 @@ freeze_layout_units <- function(grob) {
 render_panel <- function(figure, panel, data_dir, output_dir, formats=c("pdf","png")) {
   key <- paste(figure,panel,sep="/"); spec <- panel_registry[[key]]
   if (is.null(spec)) stop("Unknown figure panel: ",key)
-  labels_file <- file.path(data_dir,"Cell_state_group_labels.csv")
-  if (file.exists(labels_file)) {
-    labs <- read.csv(labels_file,stringsAsFactors=FALSE); state_labels <<- setNames(labs$figure_label,labs$group_code)
-  }
   d <- read_panel(spec,data_dir)
   set.seed(1)
   plot <- make_original_panel(d,spec,key,data_dir)

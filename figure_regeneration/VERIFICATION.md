@@ -1,6 +1,6 @@
 # Reproduction verification
 
-The final table archive is `Source_data_repository_20261002.zip` (SHA-256 `0ca3798b4e8454c40b34445a9261ac2af4c327beb4909e570f217bf62f874640`). The public renderer is tested against its unpacked contents, without raw objects, cached model files, Excel or embedded Prism files as plotting inputs.
+The final table archive is `Source_data_repository_20261002.zip` (SHA-256 `0b26712b2ce350852e102f751cc2a8206c41bd7cc415aa4b21467a59349ba7e6`). It contains 38 figure folders, 146 panel CSVs and the supplied representative uncropped Western blot image in Figure_S11, with no root-level files. All original numerical fields and values are preserved. The public renderer is tested against its unpacked contents, without raw objects, cached model files, Excel or embedded Prism files as plotting inputs.
 
 ## Checks
 
@@ -10,6 +10,7 @@ The final table archive is `Source_data_repository_20261002.zip` (SHA-256 `0ca37
 - The full run executes the same named scripts as the single-panel commands, each in a separate R session, to prevent graphics and font state carrying over between panels.
 - Coordinate columns contain finite values. Frequencies, percentages and niche fractions agree with their stored counts and denominators where these are supplied.
 - F/M records are complete in the individual IMC/shared-modality tables that include recorded categories. Other experiments do not receive inferred categories.
+- Independent-donor F/M counts formerly supplied in a companion file are included as experiment-group dictionaries in aggregate panel tables. Source-table hashes and display labels are bundled with the code; plotting requires no companion files in the data archive.
 - The validation fibroblast UMAP includes 1,155 cells from six donors, with 622 Met_hi_Fib cells. S9D includes 20,657 reference and 1,155 projected validation cells. The collagen comparison includes eight measurements in each of three conditions.
 - Preparation R/Rmd source code and Python files pass syntax checks. No preprocessing, annotation or model-training rerun is implied by these source checks.
 

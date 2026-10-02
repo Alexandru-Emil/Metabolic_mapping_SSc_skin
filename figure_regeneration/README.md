@@ -9,7 +9,9 @@ Rscript --vanilla figure_regeneration/render_all.R DATA_DIR OUTPUT_DIR
 Rscript --vanilla figure_regeneration/Figure_3/Panel_C.R DATA_DIR OUTPUT_DIR
 ```
 
-The source-data directory must contain `File_manifest.csv`, `Cell_state_group_labels.csv` and all 146 panel CSV files. `verify_source_data.R` rejects missing, altered or structurally incompatible tables. The renderer uses stored plotting values and coordinates rather than recalculating clustering, scores, expression normalization, differential expression or model training.
+The source-data directory contains figure folders with all 146 panel CSV files. SHA-256 checksums and cell-state display labels are stored in this code repository, so no index, manifest or lookup files are required in the data archive. `verify_source_data.R` rejects missing, altered or structurally incompatible tables. The renderer uses stored plotting values and coordinates rather than recalculating clustering, scores, expression normalization, differential expression or model training.
+
+Individual IMC and shared IMC–Xenium tables retain `recorded_Gender`. Aggregate panels include JSON dictionaries in `experiment_group_independent_donors`, `experiment_group_recorded_F_donors` and `experiment_group_recorded_M_donors`; these give independent-donor counts for each experiment group, rather than numbers of cells or counts per marker/state row. Other experiments have no inferred F/M metadata. `Figure_S11/Panel_B_values.csv` links to the accompanying unmodified representative uncropped Western blot PNG.
 
 Statistics and plot summaries needed to draw the original displays (e.g. paired tests, boxplot quartiles, mean/SEM and density estimates) are computed from the supplied numerical observations. The original statistical design is retained where applicable. The Seahorse endpoints use the original crossed design with EC line as a fixed effect and fibroblast donor as a random intercept.
 

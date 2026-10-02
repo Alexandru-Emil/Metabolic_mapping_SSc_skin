@@ -2,14 +2,14 @@
 verify_source_data <- function(data_dir) {
   if(!requireNamespace("digest",quietly=TRUE))stop("Install digest for SHA-256 verification")
   source("figure_regeneration/common/panel_registry.R",local=TRUE)
-  manifest<-read.csv(file.path(data_dir,"File_manifest.csv"),stringsAsFactors=FALSE)
+  source("figure_regeneration/common/source_table_hashes.R",local=TRUE)
   results<-list()
   for(key in names(panel_registry)) {
     spec<-panel_registry[[key]];path<-file.path(data_dir,spec$table)
     if(!file.exists(path))stop("Missing panel table: ",spec$table)
     d<-read.csv(path,check.names=FALSE,stringsAsFactors=FALSE)
     stopifnot(nrow(d)==spec$rows,identical(names(d),spec$columns))
-    expected<-manifest$sha256[match(spec$table,manifest$file)]
+    expected<-unname(source_table_hashes[spec$table])
     observed<-digest::digest(file=path,algo="sha256")
     if(length(expected)!=1||is.na(expected)||observed!=expected)stop("Source-table hash mismatch: ",spec$table)
     if(all(c("frequency_fraction","frequency_percent")%in%names(d)))stopifnot(all(abs(d$frequency_fraction-d$frequency_percent/100)<1e-12,na.rm=TRUE))
