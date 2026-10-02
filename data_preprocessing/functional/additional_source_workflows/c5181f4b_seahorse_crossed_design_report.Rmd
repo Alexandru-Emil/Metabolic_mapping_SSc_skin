@@ -89,7 +89,7 @@ design_table <- dat %>%
 kable(design_table)
 ```
 
-The six progressive-SSc lines and healthy lines NH208 and NH162 occur once in every EC-line block. **NH140 and NH198 are retained as separate healthy fibroblast donors in all statistical tests.** NH140 contributes the EC-line 1 measurement, whereas NH198 contributes the EC-line 2 and 3 measurements. The mixed model and blocked permutation analysis accommodate this incomplete crossing. EC source codes 427010, 412005 and 427001 are displayed as EC lines 1, 2 and 3, respectively.
+The six progressive-SSc lines and two of the healthy lines occur once in every EC-line block. **the two healthy fibroblast donors with complementary EC-line coverage are retained as separate healthy fibroblast donors in all statistical tests.** One of these healthy donors contributes the EC-line 1 measurement, whereas the other contributes the EC-line 2 and 3 measurements. The mixed model and blocked permutation analysis accommodate this incomplete crossing. The EC source-code order is provided through METABOLIC_EC_SOURCE_CODES; the three sources are displayed as EC lines 1, 2 and 3, respectively.
 
 ## Additional endpoints
 
@@ -115,7 +115,7 @@ For panel C, replace the current P values with the mixed-model values:
 - ATP-linked respiration: **P=0.0562**
 - Maximal OCR: **P=0.0203**
 
-Suggested legend wording: "P values were calculated using linear mixed-effects models with fibroblast condition and EC line as fixed effects and fibroblast donor as a random intercept; denominator degrees of freedom were estimated using the Kenward-Roger method. NH140 and NH198 were treated as separate healthy fibroblast donors. Points represent individual EC-line x fibroblast-line combinations (9 combinations from four healthy fibroblast donors and 18 combinations from six progressive-SSc fibroblast donors)."
+Suggested legend wording: "P values were calculated using linear mixed-effects models with fibroblast condition and EC line as fixed effects and fibroblast donor as a random intercept; denominator degrees of freedom were estimated using the Kenward-Roger method. the two healthy fibroblast donors with complementary EC-line coverage were treated as separate healthy fibroblast donors. Points represent individual EC-line x fibroblast-line combinations (9 combinations from four healthy fibroblast donors and 18 combinations from six progressive-SSc fibroblast donors)."
 
 The workbook contains Seahorse-derived endpoints only. It does not contain the extracellular-lactate measurements shown in panel B, so the displayed lactate P=0.019 was not recalculated here.
 

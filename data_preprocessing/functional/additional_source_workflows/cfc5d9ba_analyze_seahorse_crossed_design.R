@@ -14,6 +14,15 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 raw <- read_excel(input_file, sheet = "Sheet1", col_names = FALSE, .name_repair = "minimal")
 
+# Preserve the original EC-line order without publishing source donor codes.
+ec_source_codes <- strsplit(Sys.getenv("METABOLIC_EC_SOURCE_CODES",
+  unset = "EC1,EC2,EC3"), ",", fixed = TRUE)[[1L]]
+stopifnot(length(ec_source_codes) == 3L, !anyDuplicated(ec_source_codes))
+observed_ec_codes <- unique(as.character(na.omit(raw[[1]][-1])))
+if (!all(observed_ec_codes %in% ec_source_codes)) {
+  stop("Set METABOLIC_EC_SOURCE_CODES to match the input workbook in EC-line 1, 2, 3 order.")
+}
+
 dat <- tibble(
   ec_line_source = raw[[1]][-1],
   fibroblast_observed = as.character(raw[[2]][-1]),
@@ -28,7 +37,7 @@ dat <- tibble(
   mutate(
     ec_line = factor(
       as.character(ec_line_source),
-      levels = c("427010", "412005", "427001"),
+      levels = ec_source_codes,
       labels = c("1", "2", "3")
     ),
     fibroblast_observed = recode(
@@ -37,7 +46,7 @@ dat <- tibble(
     ),
     condition = if_else(grepl("^NH", fibroblast_observed), "Healthy", "Progressive SSc"),
     condition = factor(condition, levels = c("Healthy", "Progressive SSc")),
-    # Retain NH140 and NH198 as separate healthy fibroblast donors.
+    # Retain the two healthy fibroblast donors with complementary EC-line coverage as separate healthy fibroblast donors.
     fibroblast_model = factor(fibroblast_observed)
   )
 
@@ -294,8 +303,8 @@ writeLines(c(
   "the primary marginal model is outcome ~ condition + EC line + (1 | fibroblast donor).",
   "P values: two-sided Kenward-Roger tests for the condition marginal contrast.",
   "Sensitivity: exact donor-label permutation test preserving each donor's observed EC-line measurements and adjusting for EC line.",
-  "NH140 and NH198 are retained as separate healthy fibroblast donors in all statistical tests.",
-  "EC source codes 427010, 412005 and 427001 are displayed as EC lines 1, 2 and 3, respectively."
+  "the two healthy fibroblast donors with complementary EC-line coverage are retained as separate healthy fibroblast donors in all statistical tests.",
+  "EC source codes are ordered by METABOLIC_EC_SOURCE_CODES and displayed as EC lines 1, 2 and 3, respectively."
 ), file.path(output_dir, "README.txt"))
 
 print(results, width = Inf)

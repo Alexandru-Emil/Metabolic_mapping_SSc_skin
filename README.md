@@ -35,4 +35,10 @@ Windows paths containing spaces must be quoted. Outputs are PDF and PNG files ar
 
 ## Provenance and attribution
 
-The original IMC import workflow acknowledges Nils Eling and the [Bodenmiller Group Imaging Workshop 2023](https://github.com/BodenmillerGroup/ImagingWorkshop2023). Package citations and third-party notices remain applicable. This repository does not contain patient-identifying source files, original clinical workbooks, manuscript documents or generated reports.
+The original IMC import workflow acknowledges Nils Eling and the [Bodenmiller Group Imaging Workshop 2023](https://github.com/BodenmillerGroup/ImagingWorkshop2023). Package citations and third-party notices remain applicable. Clinical source workbooks, manuscript documents and generated reports are distributed outside this code repository.
+
+## Licence and citation
+
+This repository's code and accompanying documentation are available under the [MIT licence](LICENSE). Copyright notices and complete licences for adapted Bodenmiller Group material are preserved in [third-party notices](THIRD_PARTY_NOTICES.md). External dependencies and separately deposited data retain their own licences and access conditions.
+
+[CITATION.cff](CITATION.cff) supplies machine-readable software citation metadata. When citing this repository, identify the exact release or commit used. Cite the associated study and the upstream methods and packages used in the analysis. A permanent archival release DOI should accompany the publication code citation; source-data repository identifiers belong in the Data Availability statement and reference list.

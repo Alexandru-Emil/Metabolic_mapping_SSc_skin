@@ -40,11 +40,11 @@ validation <- read.csv(
   check.names = FALSE
 )
 formula_sensitivity <- read.csv(
-  "outputs/ssc230_negative_control_formula_sensitivity.csv",
+  "outputs/excluded_validation_negative_control_formula_sensitivity.csv",
   check.names = FALSE
 )
-ssc230_area <- read.csv(
-  "outputs/ssc230_area_threshold_audit.csv",
+excluded_validation_area <- read.csv(
+  "outputs/excluded_validation_area_threshold_audit.csv",
   check.names = FALSE
 )
 blinding <- read.csv(
@@ -57,7 +57,7 @@ sources <- read.csv(
 )
 
 six <- thresholds |> filter(pipeline == "Original six-donor QC")
-ssc230 <- thresholds |> filter(sample == "ExcludedValidation")
+excluded_validation <- thresholds |> filter(sample == "ExcludedValidation")
 six_before <- sum(six$cells_before_qc)
 six_retained <- sum(six$cells_retained)
 seven_before <- sum(thresholds$cells_before_qc)
@@ -77,12 +77,12 @@ sample-specific interval**. This retained
 
 For ExcludedValidation, an inclusive **5-400 um^2^** area predicate can be stated
 explicitly without excluding any supplied cell: its observed area range
-is `r sprintf("%.3f-%.3f", ssc230_area$observed_area_min_um2, ssc230_area$observed_area_max_um2)`
+is `r sprintf("%.3f-%.3f", excluded_validation_area$observed_area_min_um2, excluded_validation_area$observed_area_max_um2)`
 um^2^, and all
-`r format(ssc230_area$cells_evaluated, big.mark = ",")` cells pass these
+`r format(excluded_validation_area$cells_evaluated, big.mark = ",")` cells pass these
 bounds. The current rule retained
-`r format(ssc230$cells_retained, big.mark = ",")` of
-`r format(ssc230$cells_before_qc, big.mark = ",")` cells after the other
+`r format(excluded_validation$cells_retained, big.mark = ",")` of
+`r format(excluded_validation$cells_before_qc, big.mark = ",")` cells after the other
 QC criteria. ExcludedValidation still does **not** use an identical negative-control
 formula: its numerator and denominator differ from those used for the
 original six donors. The seven-donor Methods statement below therefore
@@ -121,8 +121,8 @@ while deliberately leaving cell membership unchanged; they should be
 described as non-excluding data-bracketing bounds, not as an independently
 optimized exclusion rule.
 
-```{r ssc230-area-audit}
-ssc230_area |>
+```{r excluded_validation-area-audit}
+excluded_validation_area |>
   transmute(
     Donor = sample,
     `Observed minimum (um^2)` = sprintf("%.3f", observed_area_min_um2),
@@ -224,18 +224,18 @@ subsequently using more than 20 gene-expression transcripts, more than
 10 detected genes, a negative-control proportion below 0.001, and an
 inclusive cell-area range of 5-400 um^2^. The observed ExcludedValidation cell-area
 range was
-`r sprintf("%.3f-%.3f", ssc230_area$observed_area_min_um2, ssc230_area$observed_area_max_um2)`
+`r sprintf("%.3f-%.3f", excluded_validation_area$observed_area_min_um2, excluded_validation_area$observed_area_max_um2)`
 um^2^, so the
 area criterion retained all
-`r format(ssc230_area$cells_evaluated, big.mark = ",")` supplied ExcludedValidation
+`r format(excluded_validation_area$cells_evaluated, big.mark = ",")` supplied ExcludedValidation
 cells and did not alter the final retained set. For ExcludedValidation, the
 negative-control proportion was calculated as the sum of
 negative-control-probe, negative-control-codeword, and
 unassigned-codeword counts divided by total counts. The combined
 filters retained `r format(seven_retained, big.mark = ",")` of
 `r format(seven_before, big.mark = ",")` supplied cells across seven
-donors, including `r format(ssc230$cells_retained, big.mark = ",")` of
-`r format(ssc230$cells_before_qc, big.mark = ",")` ExcludedValidation cells.
+donors, including `r format(excluded_validation$cells_retained, big.mark = ",")` of
+`r format(excluded_validation$cells_before_qc, big.mark = ",")` ExcludedValidation cells.
 
 This wording is reproducible. The area predicate is now explicit for all
 seven donors, but the ExcludedValidation bounds are non-excluding and its
@@ -270,12 +270,12 @@ validation |>
 ```
 
 The current ExcludedValidation rule retains
-`r formula_sensitivity$retained_current_ssc230_formula` cells. Applying
+`r formula_sensitivity$retained_current_excluded_validation_formula` cells. Applying
 the original six-donor negative-control formula to ExcludedValidation together with
 the inclusive 5-400 um^2^ area predicate would retain
 `r formula_sensitivity$retained_with_original_six_donor_negative_formula_and_5_400_area_filter`
 cells. The difference is
-`r formula_sensitivity$retained_only_by_current_ssc230_formula` cells.
+`r formula_sensitivity$retained_only_by_current_excluded_validation_formula` cells.
 This is a material pipeline difference to resolve before describing all
 seven donors as identically filtered.
 

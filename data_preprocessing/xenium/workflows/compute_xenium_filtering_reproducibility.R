@@ -40,11 +40,11 @@ source_paths <- c(
     xenium_object_root,
     "Xenium sfe object/sfe_afterqc.rds"
   ),
-  ssc230_pre_join = file.path(
+  excluded_validation_pre_join = file.path(
     xenium_object_root,
     "XeniumSfe_ExcludedValidation_260729115149.rds"
   ),
-  ssc230_construction_report = file.path(
+  excluded_validation_construction_report = file.path(
     xenium_object_root,
     "XeniumSfe_ExcludedValidation_20260729_102018.html"
   )
@@ -61,19 +61,19 @@ six_thresholds <- data.frame(
 
 pre <- readRDS(source_paths[["six_donor_pre_qc"]])
 post <- readRDS(source_paths[["six_donor_post_qc"]])
-ssc230 <- readRDS(source_paths[["ssc230_pre_join"]])
+excluded_validation <- readRDS(source_paths[["excluded_validation_pre_join"]])
 
 pre_cd <- as.data.frame(colData(pre), check.names = FALSE)
 post_cd <- as.data.frame(colData(post), check.names = FALSE)
-ssc230_cd <- as.data.frame(colData(ssc230), check.names = FALSE)
+excluded_validation_cd <- as.data.frame(colData(excluded_validation), check.names = FALSE)
 
-ssc230_area_min <- 5
-ssc230_area_max <- 400
-ssc230_area_pass <- with(
-  ssc230_cd,
-  cell_area >= ssc230_area_min & cell_area <= ssc230_area_max
+excluded_validation_area_min <- 5
+excluded_validation_area_max <- 400
+excluded_validation_area_pass <- with(
+  excluded_validation_cd,
+  cell_area >= excluded_validation_area_min & cell_area <= excluded_validation_area_max
 )
-stopifnot(all(ssc230_area_pass))
+stopifnot(all(excluded_validation_area_pass))
 
 count_by_sample <- function(metadata) {
   data.frame(sample = as.character(metadata$SampleId)) |>
@@ -109,12 +109,12 @@ six_counts <- six_thresholds |>
     pipeline = "Original six-donor QC"
   )
 
-ssc230_counts <- data.frame(
+excluded_validation_counts <- data.frame(
   sample = "ExcludedValidation",
-  area_min_um2_inclusive = ssc230_area_min,
-  area_max_um2_inclusive = ssc230_area_max,
-  cells_before_qc = nrow(ssc230_cd),
-  cells_retained = sum(as.logical(ssc230_cd$qc_pass), na.rm = TRUE),
+  area_min_um2_inclusive = excluded_validation_area_min,
+  area_max_um2_inclusive = excluded_validation_area_max,
+  cells_before_qc = nrow(excluded_validation_cd),
+  cells_retained = sum(as.logical(excluded_validation_cd$qc_pass), na.rm = TRUE),
   stringsAsFactors = FALSE
 ) |>
   mutate(
@@ -124,9 +124,9 @@ ssc230_counts <- data.frame(
     detected_gene_threshold = "> 10",
     negative_control_threshold = "< 0.001",
     area_filter = paste0(
-      ssc230_area_min,
+      excluded_validation_area_min,
       "-",
-      ssc230_area_max,
+      excluded_validation_area_max,
       " um^2 (inclusive; excludes 0 cells)"
     ),
     negative_control_formula = paste0(
@@ -136,7 +136,7 @@ ssc230_counts <- data.frame(
     pipeline = "Later ExcludedValidation QC with explicit non-excluding area bounds"
   )
 
-threshold_retention <- bind_rows(six_counts, ssc230_counts) |>
+threshold_retention <- bind_rows(six_counts, excluded_validation_counts) |>
   select(
     sample,
     pipeline,
@@ -163,40 +163,40 @@ six_control_numerator <- with(
 six_negative_recomputed <- six_control_numerator /
   (post_cd$transcript_counts + six_control_numerator)
 
-ssc230_negative_recomputed <- with(
-  ssc230_cd,
+excluded_validation_negative_recomputed <- with(
+  excluded_validation_cd,
   (control_probe_counts +
     control_codeword_counts +
     unassigned_codeword_counts) / total_counts
 )
 
-ssc230_six_donor_numerator <- with(
-  ssc230_cd,
+excluded_validation_six_donor_numerator <- with(
+  excluded_validation_cd,
   control_probe_counts +
     genomic_control_counts +
     control_codeword_counts +
     unassigned_codeword_counts
 )
-ssc230_negative_six_donor_formula <- ssc230_six_donor_numerator /
-  (ssc230_cd$transcript_counts + ssc230_six_donor_numerator)
-ssc230_pass_current <- as.logical(ssc230_cd$qc_pass)
-ssc230_base_pass <- with(
-  ssc230_cd,
+excluded_validation_negative_six_donor_formula <- excluded_validation_six_donor_numerator /
+  (excluded_validation_cd$transcript_counts + excluded_validation_six_donor_numerator)
+excluded_validation_pass_current <- as.logical(excluded_validation_cd$qc_pass)
+excluded_validation_base_pass <- with(
+  excluded_validation_cd,
   transcript_counts > 20 & nFeature > 10
 )
-ssc230_pass_six_donor_negative_formula <- ssc230_base_pass &
-  ssc230_negative_six_donor_formula < 0.001 &
-  ssc230_area_pass
+excluded_validation_pass_six_donor_negative_formula <- excluded_validation_base_pass &
+  excluded_validation_negative_six_donor_formula < 0.001 &
+  excluded_validation_area_pass
 
-ssc230_area_audit <- data.frame(
+excluded_validation_area_audit <- data.frame(
   sample = "ExcludedValidation",
-  observed_area_min_um2 = min(ssc230_cd$cell_area, na.rm = TRUE),
-  observed_area_max_um2 = max(ssc230_cd$cell_area, na.rm = TRUE),
-  applied_area_min_um2_inclusive = ssc230_area_min,
-  applied_area_max_um2_inclusive = ssc230_area_max,
-  cells_evaluated = nrow(ssc230_cd),
-  cells_passing_area = sum(ssc230_area_pass, na.rm = TRUE),
-  cells_excluded_by_area = sum(!ssc230_area_pass, na.rm = TRUE),
+  observed_area_min_um2 = min(excluded_validation_cd$cell_area, na.rm = TRUE),
+  observed_area_max_um2 = max(excluded_validation_cd$cell_area, na.rm = TRUE),
+  applied_area_min_um2_inclusive = excluded_validation_area_min,
+  applied_area_max_um2_inclusive = excluded_validation_area_max,
+  cells_evaluated = nrow(excluded_validation_cd),
+  cells_passing_area = sum(excluded_validation_area_pass, na.rm = TRUE),
+  cells_excluded_by_area = sum(!excluded_validation_area_pass, na.rm = TRUE),
   selection_note = paste0(
     "Round outward bounds around the observed area range; ",
     "the area predicate is explicit and reproducible but non-excluding."
@@ -245,20 +245,20 @@ validation <- data.frame(
       na.rm = TRUE
     ) < 1e-14,
     isTRUE(all.equal(
-      ssc230_cd$new_prop_neg_count,
-      ssc230_negative_recomputed,
+      excluded_validation_cd$new_prop_neg_count,
+      excluded_validation_negative_recomputed,
       tolerance = 1e-15,
       check.attributes = FALSE
     )),
-    all(ssc230_area_pass),
+    all(excluded_validation_area_pass),
     identical(
-      ssc230_pass_current,
+      excluded_validation_pass_current,
       with(
-        ssc230_cd,
+        excluded_validation_cd,
         transcript_counts > 20 &
           nFeature > 10 &
           new_prop_neg_count < 0.001 &
-          ssc230_area_pass
+          excluded_validation_area_pass
       )
     )
   ),
@@ -267,14 +267,14 @@ validation <- data.frame(
 
 formula_sensitivity <- data.frame(
   sample = "ExcludedValidation",
-  cells_before_qc = nrow(ssc230_cd),
-  retained_current_ssc230_formula = sum(ssc230_pass_current),
+  cells_before_qc = nrow(excluded_validation_cd),
+  retained_current_excluded_validation_formula = sum(excluded_validation_pass_current),
   retained_with_original_six_donor_negative_formula_and_5_400_area_filter =
-    sum(ssc230_pass_six_donor_negative_formula),
-  retained_only_by_current_ssc230_formula =
-    sum(ssc230_pass_current & !ssc230_pass_six_donor_negative_formula),
+    sum(excluded_validation_pass_six_donor_negative_formula),
+  retained_only_by_current_excluded_validation_formula =
+    sum(excluded_validation_pass_current & !excluded_validation_pass_six_donor_negative_formula),
   retained_only_by_original_six_donor_formula =
-    sum(!ssc230_pass_current & ssc230_pass_six_donor_negative_formula),
+    sum(!excluded_validation_pass_current & excluded_validation_pass_six_donor_negative_formula),
   stringsAsFactors = FALSE
 )
 
@@ -328,12 +328,12 @@ write.csv(
 )
 write.csv(
   formula_sensitivity,
-  file.path(output_dir, "ssc230_negative_control_formula_sensitivity.csv"),
+  file.path(output_dir, "excluded_validation_negative_control_formula_sensitivity.csv"),
   row.names = FALSE
 )
 write.csv(
-  ssc230_area_audit,
-  file.path(output_dir, "ssc230_area_threshold_audit.csv"),
+  excluded_validation_area_audit,
+  file.path(output_dir, "excluded_validation_area_threshold_audit.csv"),
   row.names = FALSE
 )
 write.csv(
@@ -361,8 +361,8 @@ write.csv(
 
 six_total_before <- sum(six_counts$cells_before_qc)
 six_total_retained <- sum(six_counts$cells_retained)
-seven_total_before <- six_total_before + ssc230_counts$cells_before_qc
-seven_total_retained <- six_total_retained + ssc230_counts$cells_retained
+seven_total_before <- six_total_before + excluded_validation_counts$cells_before_qc
+seven_total_retained <- six_total_retained + excluded_validation_counts$cells_retained
 
 summary_lines <- c(
   paste0(
@@ -376,16 +376,16 @@ summary_lines <- c(
   ),
   paste0(
     "ExcludedValidation: ",
-    format(ssc230_counts$cells_retained, big.mark = ","),
+    format(excluded_validation_counts$cells_retained, big.mark = ","),
     " of ",
-    format(ssc230_counts$cells_before_qc, big.mark = ","),
+    format(excluded_validation_counts$cells_before_qc, big.mark = ","),
     " cells retained (",
     sprintf(
       "%.2f",
-      100 * ssc230_counts$cells_retained / ssc230_counts$cells_before_qc
+      100 * excluded_validation_counts$cells_retained / excluded_validation_counts$cells_before_qc
     ),
     "%). The inclusive 5-400 um^2 area predicate retained all ",
-    format(ssc230_area_audit$cells_passing_area, big.mark = ","),
+    format(excluded_validation_area_audit$cells_passing_area, big.mark = ","),
     " supplied ExcludedValidation cells and therefore did not alter the final set."
   ),
   paste0(
@@ -402,7 +402,7 @@ summary_lines <- c(
     "together with the inclusive 5-400 um^2 area predicate would retain ",
     formula_sensitivity$retained_with_original_six_donor_negative_formula_and_5_400_area_filter,
     " cells, ",
-    formula_sensitivity$retained_only_by_current_ssc230_formula,
+    formula_sensitivity$retained_only_by_current_excluded_validation_formula,
     " fewer than the current ExcludedValidation rule."
   )
 )
@@ -470,11 +470,11 @@ methods_seven <- paste0(
   "negative-control proportion below 0.001, together with an inclusive ",
   "cell-area range of 5-400 um^2. The observed ExcludedValidation cell-area range ",
   "was ",
-  sprintf("%.3f", ssc230_area_audit$observed_area_min_um2),
+  sprintf("%.3f", excluded_validation_area_audit$observed_area_min_um2),
   "-",
-  sprintf("%.3f", ssc230_area_audit$observed_area_max_um2),
+  sprintf("%.3f", excluded_validation_area_audit$observed_area_max_um2),
   " um^2, so the area criterion retained all ",
-  format(ssc230_area_audit$cells_evaluated, big.mark = ","),
+  format(excluded_validation_area_audit$cells_evaluated, big.mark = ","),
   " supplied ExcludedValidation cells and did not change the final retained set. ",
   "For ExcludedValidation, the negative-control proportion ",
   "was calculated as the sum of negative-control-probe, ",
@@ -484,9 +484,9 @@ methods_seven <- paste0(
   " of ",
   format(seven_total_before, big.mark = ","),
   " supplied cells across seven donors, including ",
-  format(ssc230_counts$cells_retained, big.mark = ","),
+  format(excluded_validation_counts$cells_retained, big.mark = ","),
   " of ",
-  format(ssc230_counts$cells_before_qc, big.mark = ","),
+  format(excluded_validation_counts$cells_before_qc, big.mark = ","),
   " ExcludedValidation cells."
 )
 
@@ -509,13 +509,13 @@ reviewer_response <- paste0(
   "not present in the QC object and were not used to set thresholds. ",
   "For ExcludedValidation, an inclusive area range of 5-400 um^2 was recorded. ",
   "The observed range was ",
-  sprintf("%.3f", ssc230_area_audit$observed_area_min_um2),
+  sprintf("%.3f", excluded_validation_area_audit$observed_area_min_um2),
   "-",
-  sprintf("%.3f", ssc230_area_audit$observed_area_max_um2),
+  sprintf("%.3f", excluded_validation_area_audit$observed_area_max_um2),
   " um^2; consequently, this explicit area predicate retained all ",
-  format(ssc230_area_audit$cells_evaluated, big.mark = ","),
+  format(excluded_validation_area_audit$cells_evaluated, big.mark = ","),
   " supplied cells and excluded none. ExcludedValidation retained ",
-  format(ssc230_counts$cells_retained, big.mark = ","),
+  format(excluded_validation_counts$cells_retained, big.mark = ","),
   " cells after the transcript, detected-gene, and negative-control ",
   "criteria. Its negative-control proportion was calculated using the ",
   "subsequent ExcludedValidation construction formula documented in the Methods."

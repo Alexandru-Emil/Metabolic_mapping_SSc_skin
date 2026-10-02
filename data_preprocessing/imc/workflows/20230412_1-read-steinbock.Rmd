@@ -17,6 +17,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 > Text and R codes are adapted from Nils Eling at Bodenmiller Group, which is created for the Imaging Workshop 2023 More information can be found on [GitHub](https://github.com/BodenmillerGroup/ImagingWorkshop2023).
 
+> Upstream copyright: Copyright (c) 2022 BodenmillerGroup. Licence: MIT. The full notice is retained in [the upstream licence file](../../third_party_licenses/ImagingWorkshop2023_MIT_LICENSE.txt); see also [third-party attribution](../../../THIRD_PARTY_NOTICES.md). Acquisition names below use illustrative public sample labels.
+
 ## Data import from steinbock
 
 Run the following code chunk if the packages are **NOT** installed.
@@ -52,17 +54,17 @@ Rename the sample ID and assign column names for each cell in the entire  datase
 ```{r col-names}
 library("stringr")
 # rename sample ID
-spe$patient_id[spe$sample_id == "Fibro_NH-Skin_193_196_20220131_Aleix_001"] <- "NH193"
-spe$patient_id[spe$sample_id == "Fibro_NH-Skin_193_196_20220131_Aleix_002"] <- "NH196"
-spe$patient_id[spe$sample_id == "Fibro_SSc-Skin_194733_20220214_Aleix_001"] <- "SSc194733"
-spe$patient_id[spe$sample_id == "Fibro_SSc194994_20220207_Aleix_001"] <- "SSc194994"
+spe$patient_id[spe$sample_id == "ExampleHealthy1_001"] <- "ExampleHealthy1"
+spe$patient_id[spe$sample_id == "ExampleHealthy2_001"] <- "ExampleHealthy2"
+spe$patient_id[spe$sample_id == "ExampleSSc1_001"] <- "ExampleSSc1"
+spe$patient_id[spe$sample_id == "ExampleSSc2_001"] <- "ExampleSSc2"
 
 # assign colnames
 colnames(spe) <- paste0(spe$patient_id, "_", spe$ObjectNumber)
 
 # assign indications
-spe$indication[spe$patient_id %in% c("NH193", "NH196")] <- "NH"
-spe$indication[spe$patient_id %in% c("SSc194733", "SSc194994")] <- "SSc"
+spe$indication[spe$patient_id %in% c("ExampleHealthy1", "ExampleHealthy2")] <- "NH"
+spe$indication[spe$patient_id %in% c("ExampleSSc1", "ExampleSSc2")] <- "SSc"
 ```
 
 ## Data preprocessing
@@ -239,10 +241,10 @@ all.equal(names(images), names(masks)) ## confirm the names of images and masks 
 ## assign metadata to the objects
 # assign patient id
 patient_id <- names(images)
-patient_id[patient_id == "Fibro_NH-Skin_193_196_20220131_Aleix_001"] <- "NH193"
-patient_id[patient_id == "Fibro_NH-Skin_193_196_20220131_Aleix_002"] <- "NH196"
-patient_id[patient_id == "Fibro_SSc-Skin_194733_20220214_Aleix_001"] <- "SSc194733"
-patient_id[patient_id == "Fibro_SSc194994_20220207_Aleix_001"] <- "SSc194994"
+patient_id[patient_id == "ExampleHealthy1_001"] <- "ExampleHealthy1"
+patient_id[patient_id == "ExampleHealthy2_001"] <- "ExampleHealthy2"
+patient_id[patient_id == "ExampleSSc1_001"] <- "ExampleSSc1"
+patient_id[patient_id == "ExampleSSc2_001"] <- "ExampleSSc2"
 
 # extract indication from patient_id
 library(stringr)

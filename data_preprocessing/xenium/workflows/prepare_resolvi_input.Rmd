@@ -59,7 +59,7 @@ obj <- readRDS('../data/20251111mergedqcdata1.rds')
 obj@meta.data$SlideId <- paste0('00', gsub('.000000', '', as.character(obj$SlideId)))
 obj@meta.data$SlideId <- case_when(
   !is.na(obj$XeniumSlideId) ~ obj$XeniumSlideId,
-  obj$SampleId %in% c('SSc248') ~ '0037406',
+  obj$SampleId %in% c(Sys.getenv("METABOLIC_ADDITIONAL_XENIUM_SAMPLE", unset = "AdditionalValidation1")) ~ '0037406',
   .default = obj$SlideId
 )
 

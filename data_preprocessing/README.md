@@ -21,3 +21,9 @@ Set `METABOLIC_INPUT_DIR` to an external directory containing the project-relati
 The legacy source workflows retain their original internal ordering and object dependencies. Choose the intended source version and required upstream objects using the source index. They are not an automatically chained pipeline. Existing methods, thresholds, transformations, donor exclusions and alternative analyses have not been redefined for this release.
 
 The supplied `renv.lock` records the original IMC project's dependency specification. The separately tested table-rendering environment is recorded under `figure_regeneration`.
+
+## Legacy source-code configuration
+
+The historical Seahorse preparation workflow reads three EC source codes from `METABOLIC_EC_SOURCE_CODES`, as a comma-separated string in the original EC-line 1, 2, 3 order. The default is `EC1,EC2,EC3` for an aliased input workbook. Use a private environment value when working with the original workbook; source donor codes are not embedded in the public script. This changes input configuration only, preserving the original factor order and statistical design.
+
+The historical ResolVI input notebook reads its additional sample label from `METABOLIC_ADDITIONAL_XENIUM_SAMPLE`, defaulting to `AdditionalValidation1`. This additional sample is separate from the final six-donor deposited figure cohort. The excluded-validation QC workflows use descriptive variable names.
