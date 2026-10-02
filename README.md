@@ -35,7 +35,7 @@ Rscript --vanilla figure_regeneration/Figure_5/Panel_E.R /path/to/source_data /p
 
 ## Acknowledgements
 
-We thank the Bodenmiller Group for the [Bodenmiller Group Imaging Workshop 2023](https://github.com/BodenmillerGroup/ImagingWorkshop2023) resources, which provided the basis for our IMC analysis code and workflows.
+We thank Nils Eling and the Bodenmiller Group for the [Imaging Workshop 2023](https://github.com/BodenmillerGroup/ImagingWorkshop2023) and [IMCDataAnalysis](https://github.com/BodenmillerGroup/IMCDataAnalysis) resources, which informed our IMC analysis workflows. We also acknowledge the developers of [Seurat](https://github.com/satijalab/seurat), [steinbock](https://github.com/BodenmillerGroup/steinbock), [imcRtools](https://github.com/BodenmillerGroup/imcRtools), [ResolVI](https://docs.scvi-tools.org/en/stable/user_guide/models/resolvi.html), [MintFlow](https://github.com/Lotfollahi-lab/mintflow) and the other open-source packages used in these analyses.
 
 ## Licence and citation
 
