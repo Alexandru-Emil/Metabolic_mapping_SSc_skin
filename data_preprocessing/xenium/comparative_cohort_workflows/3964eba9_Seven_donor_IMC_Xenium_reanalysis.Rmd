@@ -1,6 +1,6 @@
 ---
 title: "Seven-donor IMC-Xenium reanalysis"
-author: "Codex"
+author: "Alex Matei (with Codex assistance)"
 date: "`r format(Sys.Date(), '%d %B %Y')`"
 output:
   html_document:

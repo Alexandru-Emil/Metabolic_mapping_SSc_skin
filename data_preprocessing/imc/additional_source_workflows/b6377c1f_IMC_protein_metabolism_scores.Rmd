@@ -1,6 +1,6 @@
 ---
 title: "IMC Protein Metabolism Scores"
-author: "Codex"
+author: "Alex Matei (with Codex assistance)"
 date: "`r Sys.Date()`"
 params:
   analysis: "fibroblasts"

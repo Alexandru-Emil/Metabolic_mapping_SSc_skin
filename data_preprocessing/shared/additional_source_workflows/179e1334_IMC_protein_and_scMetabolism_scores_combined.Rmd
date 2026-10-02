@@ -1,6 +1,6 @@
 ---
 title: "IMC Protein and Xenium scMetabolism Scores"
-author: "Codex"
+author: "Alex Matei (with Codex assistance)"
 date: "`r Sys.Date()`"
 output:
   html_document:

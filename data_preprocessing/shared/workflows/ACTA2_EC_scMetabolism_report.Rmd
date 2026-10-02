@@ -1,6 +1,6 @@
 ---
 title: "ACTA2_EC scMetabolism report"
-author: "Codex"
+author: "Alex Matei (with Codex assistance)"
 date: "`r Sys.Date()`"
 output:
   html_document:
