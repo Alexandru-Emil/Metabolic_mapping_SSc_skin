@@ -13,6 +13,8 @@ The source-data directory must contain `File_manifest.csv`, `Cell_state_group_la
 
 Statistics and plot summaries needed to draw the original displays (e.g. paired tests, boxplot quartiles, mean/SEM and density estimates) are computed from the supplied numerical observations. The original statistical design is retained where applicable. The Seahorse endpoints use the original crossed design with EC line as a fixed effect and fibroblast donor as a random intercept.
 
+The full run launches each named panel script in a separate R session to keep graphics and font settings independent between panels. Four panels run concurrently by default; set `METABOLIC_PLOT_WORKERS=1` for sequential execution on a computer with limited memory. Panel logs and session information accompany the exports.
+
 Niche fractions and frequencies defined as missing because of insufficient cells retain missing values. They are not replaced with zero. Tables may include additional scores; adapters select the scores shown in the corresponding manuscript panel.
 
 The 19 image/schematic panel scripts use original PNG assets instead of numerical tables:

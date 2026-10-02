@@ -6,6 +6,8 @@ The final table archive is `Source_data_repository_20261002.zip` (SHA-256 `0ca37
 
 - All 146 numerical panel CSV files match the recorded SHA-256 checksums, expected column order and row counts: 567,421 rows in total.
 - Each named numerical panel script runs and exports a nonempty PDF and PNG. The full run writes `rendered_panels.csv`, `verified_source_tables.csv` and `sessionInfo.txt` outside the code repository.
+- The renderer builds each panel layout once with fixed device settings and reuses its grobs for PDF and PNG. The random seed is reset before construction and drawing, including jittered observations and repelled labels.
+- The full run executes the same named scripts as the single-panel commands, each in a separate R session, to prevent graphics and font state carrying over between panels.
 - Coordinate columns contain finite values. Frequencies, percentages and niche fractions agree with their stored counts and denominators where these are supplied.
 - F/M records are complete in the individual IMC/shared-modality tables that include recorded categories. Other experiments do not receive inferred categories.
 - The validation fibroblast UMAP includes 1,155 cells from six donors, with 622 Met_hi_Fib cells. S9D includes 20,657 reference and 1,155 projected validation cells. The collagen comparison includes eight measurements in each of three conditions.

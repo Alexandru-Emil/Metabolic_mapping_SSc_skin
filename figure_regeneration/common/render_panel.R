@@ -284,15 +284,26 @@ render_panel <- function(figure, panel, data_dir, output_dir, formats=c("pdf","p
   if(is.null(plot))plot <- make_panel(d,spec)
   directory <- file.path(output_dir,paste0("Figure_",figure));dir.create(directory,recursive=TRUE,showWarnings=FALSE)
   prefix <- file.path(directory,paste0("Panel_",panel))
+  # Build one layout on the export device, then reuse it for every format.
+  # Separate ggplot builds can inherit different text metrics from prior devices.
+  layout_device <- tempfile(fileext=".png")
+  grDevices::png(layout_device,width=spec$width,height=spec$height,units="in",res=200,type="cairo",pointsize=12,family="Arial")
+  plot_grob <- tryCatch({
+    grid::grid.newpage()
+    set.seed(1)
+    if(inherits(plot,c("grob","gtable")))plot else if(inherits(plot,"patchwork"))patchwork::patchworkGrob(plot) else ggplot2::ggplotGrob(plot)
+  },finally={grDevices::dev.off();unlink(layout_device)})
   for (format in formats) {
     filename <- paste0(prefix,".",format)
-    if (format=="pdf") grDevices::cairo_pdf(filename,width=spec$width,height=spec$height) else if(format=="png") grDevices::png(filename,width=spec$width,height=spec$height,units="in",res=200,type="cairo") else stop("Supported formats: pdf, png")
-    tryCatch({if(inherits(plot,c("grob","gtable"))){grid::grid.newpage();grid::grid.draw(plot)}else print(plot)},finally=grDevices::dev.off())
+    if (format=="pdf") grDevices::cairo_pdf(filename,width=spec$width,height=spec$height,pointsize=12,family="Arial") else if(format=="png") grDevices::png(filename,width=spec$width,height=spec$height,units="in",res=200,type="cairo",pointsize=12,family="Arial") else stop("Supported formats: pdf, png")
+    tryCatch({grid::grid.newpage();set.seed(1);grid::grid.draw(plot_grob)},finally=grDevices::dev.off())
     if (file.info(filename)$size < 500) stop("Empty plot export: ",filename)
   }
   invisible(list(figure=figure,panel=panel,rows=nrow(d),table=spec$table,type=spec$type))
 }
 panel_main <- function(figure,panel,args=commandArgs(trailingOnly=TRUE)) {
   if(length(args)<2)stop("Usage: Rscript figure_regeneration/Figure_<id>/Panel_<id>.R DATA_DIR OUTPUT_DIR")
-  render_panel(figure,panel,args[1],args[2])
+  result<-render_panel(figure,panel,args[1],args[2])
+  writeLines(capture.output(sessionInfo()),file.path(args[2],paste0("Figure_",figure),paste0("Panel_",panel,"_sessionInfo.txt")))
+  invisible(result)
 }
