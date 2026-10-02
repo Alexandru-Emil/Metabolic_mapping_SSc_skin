@@ -1,8 +1,8 @@
 # Metabolic mapping of SSc skin
 
-Analysis code for **Single-cell mapping of the metabolic landscape of skin fibrosis in systemic sclerosis**, by Devakumar, Li, Filla, Rius Rigau, Györfi, Zhi, Zhu, Qi, Tümerdem, Neelagar, Wang, Liang, Bergmann, Schett, Distler and Matei.
+Analysis code for **Single cell mapping of the metabolic landscape of skin fibrosis in systemic sclerosis**, by Devakumar, Li, Filla, Rius Rigau, Györfi, Zhi, Zhu, Qi, Tümerdem, Neelagar, Wang, Liang, Bergmann, Schett, Distler and Matei.
 
-Archived code version 1.0.0: [10.5281/zenodo.23107219](https://doi.org/10.5281/zenodo.23107219). Figure source data: [10.5281/zenodo.23107366](https://doi.org/10.5281/zenodo.23107366).
+Archived code version 1.0.1: [10.5281/zenodo.23107573](https://doi.org/10.5281/zenodo.23107573). Figure source data: [10.5281/zenodo.23107366](https://doi.org/10.5281/zenodo.23107366).
 
 ## Organization
 
