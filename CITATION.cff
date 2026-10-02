@@ -15,9 +15,9 @@ authors:
 repository-code: "https://github.com/Alexandru-Emil/Metabolic_mapping_SSc_skin"
 url: "https://github.com/Alexandru-Emil/Metabolic_mapping_SSc_skin"
 license: MIT
-version: 1.0.2
+version: 1.0.1
 date-released: 2026-10-02
-doi: 10.5281/zenodo.23107218
+doi: 10.5281/zenodo.23107573
 abstract: >-
   Analysis workflows for imaging mass cytometry, Xenium and supporting
   experiments in systemic sclerosis skin, with figure-panel scripts that
