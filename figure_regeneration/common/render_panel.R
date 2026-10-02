@@ -123,6 +123,15 @@ sankey_panel <- function(d) {
   # Aggregate counts are expanded to the cell-to-state pairs consumed by make_long.
   pairs<-d[rep(seq_len(nrow(d)),d$Freq),c("Xenium","IMC")]
   long<-ggsankey::make_long(pairs,Xenium,IMC)
+  if(all(c("papillary_Fib","PI16_Fib")%in%pairs$Xenium)) {
+    # The Figure 5F palette orders RNA annotations before the two IMC states.
+    palette_order<-c("CCL19_Fib","COCH_Fib","COL8A1_Fib","COMP_Fib","CXCL12_Fib","NGFR_Fib","papillary_Fib","PI16_Fib","Met_hi_Fib","Other_Fib")
+    return(ggplot(long,aes(x=x,next_x=next_x,node=node,next_node=next_node,fill=node,label=node))+
+      ggsankey::geom_sankey(flow.alpha=.3,node.color="grey30")+
+      ggsankey::geom_sankey_text(aes(hjust=ifelse(x=="Xenium",1.6,-.6)),size=3,color="black")+
+      scale_fill_manual(values=setNames(scales::hue_pal()(10),palette_order))+
+      scale_x_discrete(expand=expansion(add=c(.55,.55)))+theme_void()+theme(legend.position="none"))
+  }
   ggplot(long,aes(x=x,next_x=next_x,node=node,next_node=next_node,fill=node,label=node))+
     ggsankey::geom_sankey(flow.alpha=.7,node.color="grey30")+
     ggsankey::geom_sankey_label(size=3,color="black")+theme_minimal()+labs(x=NULL,y=NULL)+
@@ -302,6 +311,7 @@ render_panel <- function(figure, panel, data_dir, output_dir, formats=c("pdf","p
   set.seed(1)
   plot <- make_original_panel(d,spec,key,data_dir)
   if(is.null(plot))plot <- make_panel(d,spec)
+  if(inherits(plot,"patchwork"))plot<-plot & theme(text=element_text(family="Arial")) else if(inherits(plot,"ggplot"))plot<-plot+theme(text=element_text(family="Arial"))
   directory <- file.path(output_dir,paste0("Figure_",figure));dir.create(directory,recursive=TRUE,showWarnings=FALSE)
   prefix <- file.path(directory,paste0("Panel_",panel))
   # Build one layout on the export device, then reuse it for every format.

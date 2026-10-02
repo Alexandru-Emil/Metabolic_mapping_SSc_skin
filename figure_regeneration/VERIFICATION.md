@@ -19,6 +19,8 @@ The source-table checks establish which numerical inputs are used and whether th
 
 Original six-donor IMC plot expressions are retained for 5B/C/E, S9A/B and S14A/B, including their colour limits, paired statistics and export dimensions. Original functions are retained for signal/noise, GSEA and metabolic/ECM score displays. Other panels use the original plotting components with table bindings. Prism-derived functional plots are recreated from numerical observations using the original plot type and experimental design.
 
+Figure 5D uses a taller export to keep all gene labels separate, with the original marker/colour scales and the manuscript's horizontal group labels and legend order. Figure 5F retains the original Sankey calculations, with the manuscript's node palette, pale flows and external labels. Numerical inputs are unchanged by these presentation settings.
+
 Figure 5G's recovered table contains nonnegative CoreMatrisome AUCell means. The 11 August figure displays negative values in its ECM colour legend. The supplied adapter draws the recovered raw means; the original figure's displayed colour transformation or alternative score has not been established from the located sources. An exact Figure 5G match is therefore not certified.
 
 S9D draws newly regenerated reference-projection coordinates from the original PCA/UMAP/anchor/MapQuery method. These coordinates replace a missing saved projection and are not claimed to be the original unsaved embedding.

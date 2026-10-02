@@ -96,8 +96,10 @@ make_original_panel <- function(d,spec,key,data_dir) {
     d$features.plot<-factor(d$features.plot,levels=unique(d$features.plot))
     return(ggplot(d,aes(x=id,y=features.plot))+geom_point(aes(size=pct.exp,color=avg.exp.scaled))+
       scale_color_gradientn(colors=rev(RColorBrewer::brewer.pal(7,"RdBu")))+scale_size(range=c(1,8))+
-      scale_y_discrete(limits=rev)+labs(x=NULL,y=NULL,color="Average expression",size="Percent expressed")+theme_bw()+
-      theme(axis.text.x=element_text(size=18,angle=45,hjust=1),axis.text.y=element_text(size=18),legend.title=element_text(size=18),legend.text=element_text(size=16)))
+      scale_y_discrete(limits=rev)+scale_x_discrete(labels=expression("Other_Fib",plain(Met)^hi*"_Fib"))+
+      guides(colour=guide_colourbar(order=1),size=guide_legend(order=2))+
+      labs(x=NULL,y=NULL,color="Average expression",size="Percent expressed")+theme_bw()+
+      theme(axis.text.x=element_text(size=18,angle=0,hjust=.5),axis.text.y=element_text(size=18),legend.title=element_text(size=18),legend.text=element_text(size=16)))
   }
   if(key=="S14/F") {
     e<-original_environment("ec")
