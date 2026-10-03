@@ -23,9 +23,3 @@ The workflow's recommended scientific citation is Windhager, J., Zanotelli, V. R
 The root [`LICENSE`](LICENSE) grants the MIT licence for this repository's project code and accompanying documentation and retains the above upstream copyright notices. It does not replace the licences of external R, Python or other dependencies. Those packages remain subject to their own licences and scientific citation requirements; dependency versions are recorded in the environment files.
 
 The MIT code licence does not grant rights to separately deposited clinical or experimental data, microscopy images, manuscript assets or third-party datasets. Their repository records specify the applicable access conditions and reuse terms.
-
-## Public sample labels
-
-The historical import notebook uses `ExampleHealthy1`, `ExampleHealthy2`, `ExampleSSc1` and `ExampleSSc2` in place of its original acquisition and patient labels. These are illustrative historical labels and do not establish a mapping to the final deposited cohorts. The original source fingerprint remains in the preparation-source index.
-
-Legacy healthy-line labels were removed from Seahorse explanatory text. EC source codes and the historical additional Xenium sample label are supplied through private runtime configuration when needed; numerical analysis and figure-table inputs are unchanged. Earlier Git commits have not been rewritten.
