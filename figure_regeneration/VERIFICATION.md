@@ -1,10 +1,10 @@
 # Reproduction verification
 
-The final table archive is `Source_data_repository_20261002.zip` (SHA-256 `0b26712b2ce350852e102f751cc2a8206c41bd7cc415aa4b21467a59349ba7e6`). It contains 38 figure folders, 146 panel CSVs and the supplied representative uncropped Western blot image in Figure_S11, with no root-level files. All original numerical fields and values are preserved. The public renderer is tested against its unpacked contents, without raw objects, cached model files, Excel or embedded Prism files as plotting inputs.
+The final table archive is `Source_data_repository_20261003_corrected.zip` (SHA-256 `9dbe0e7d23f5ec2d2caa1c95c3331e24bfb6ec0dd813bd96ce3c0729079e4f52`). It contains 38 figure folders, 146 panel CSVs and the supplied representative uncropped Western blot image in Figure_S11, with no root-level files. The renderer reads the deposited numerical values without altering them. The public renderer is tested against its unpacked contents, without raw objects, cached model files, Excel or embedded Prism files as plotting inputs.
 
 ## Checks
 
-- All 146 numerical panel CSV files match the recorded SHA-256 checksums, expected column order and row counts: 567,421 rows in total.
+- All 146 numerical panel CSV files match the recorded SHA-256 checksums, expected column order and row counts: 572,490 rows in total.
 - Each named numerical panel script runs and exports a nonempty PDF and PNG. The full run writes `rendered_panels.csv`, `verified_source_tables.csv` and `sessionInfo.txt` outside the code repository.
 - The renderer builds each panel layout once with fixed device settings and reuses its grobs for PDF and PNG. The random seed is reset before construction and drawing, including jittered observations and repelled labels.
 - The full run executes the same named scripts as the single-panel commands, each in a separate R session, to prevent graphics and font state carrying over between panels.
@@ -27,3 +27,11 @@ Figure 5G's recovered table contains nonnegative CoreMatrisome AUCell means. The
 S9D draws newly regenerated reference-projection coordinates from the original PCA/UMAP/anchor/MapQuery method. These coordinates replace a missing saved projection and are not claimed to be the original unsaved embedding.
 
 Final page layouts, manually edited labels/legends, clinical annotation strips absent from the panel tables, schematics and microscopy images are supplied by the original manuscript assets. The 19 image/schematic wrapper scripts require original PNG assets and are separate from the numerical-table run.
+
+## Figure 7A-B source-data correction (3 October 2026)
+
+The original export selected only Methi_Fib-neighbor-positive cells and reduced their scores to donor summaries. That export and its Healthy-versus-SSc boxplot adapter did not reproduce Figure 7A-B. The corrected tables contain individual endothelial-cell (4,373 rows) and macrophage (727 rows) scores for both saved neighbor groups.
+
+The original `Expr_hasneigh_plots_violin_nostatistics.Rmd` and its saved HTML identify `Glycolysis_z_c` and `TCA_z_c` as the plotted scores. The adapter retains its violin density settings, colors, point size/transparency and dashed reference line at the median of the neighbor-negative cells. CSV score values round-trip exactly to the original saved object. The original and table-driven plots have identical density coordinates and reference-line values. Healthy and SSc cells are pooled within each neighbor group, as in the original panel. No new statistical test is added.
+
+Saved original plots and the assembled manuscript were inspected to confirm distribution shapes, scales, colors and group order. Point jitter is fixed for reproducibility; the original notebook did not save a jitter seed. Manually assembled figure labels remain part of the manuscript assets. The earlier all-panel execution checks did not detect this panel-input mismatch; they establish successful rendering, not scientific equivalence for every other panel.

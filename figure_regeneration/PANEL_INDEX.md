@@ -35,8 +35,8 @@ Original plotting functions and expressions are retained in `common/original_plo
 | 6C | [Figure_6/Panel_C.R](Figure_6/Panel_C.R) | `Figure_6/Panel_C_values.csv` | 1,410 | rnaseq/workflows/15_all_feature_strict_deg_figure_heatmaps_edgeR_exact.R |
 | 6D | [Figure_6/Panel_D.R](Figure_6/Panel_D.R) | `Figure_6/Panel_D_values.csv` | 11 | rnaseq/workflows/11_selected_2dg_ldha_gsea_dotplots_edgeR_exact_merged_metabolism.R |
 | 6E | [Figure_6/Panel_E.R](Figure_6/Panel_E.R) | `Figure_6/Panel_E_values.csv` | 11 | rnaseq/workflows/11_selected_2dg_ldha_gsea_dotplots_edgeR_exact_merged_metabolism.R |
-| 7A | [Figure_7/Panel_A.R](Figure_7/Panel_A.R) | `Figure_7/Panel_A_values.csv` | 16 | imc/workflows/Interaction/Expr_hasneigh_plots.Rmd |
-| 7B | [Figure_7/Panel_B.R](Figure_7/Panel_B.R) | `Figure_7/Panel_B_values.csv` | 15 | imc/workflows/Interaction/Expr_hasneigh_plots.Rmd |
+| 7A | [Figure_7/Panel_A.R](Figure_7/Panel_A.R) | `Figure_7/Panel_A_values.csv` | 4373 | imc/workflows/Interaction/Expr_hasneigh_plots_violin_nostatistics.Rmd |
+| 7B | [Figure_7/Panel_B.R](Figure_7/Panel_B.R) | `Figure_7/Panel_B_values.csv` | 727 | imc/workflows/Interaction/Expr_hasneigh_plots_violin_nostatistics.Rmd |
 | 7C | [Figure_7/Panel_C.R](Figure_7/Panel_C.R) | `Figure_7/Panel_C_values.csv` | 4,373 | imc/workflows/Dist_ridge/Dist_to_cell_types_density_heatmap.Rmd |
 | 7D | [Figure_7/Panel_D.R](Figure_7/Panel_D.R) | `Figure_7/Panel_D_values.csv` | 727 | imc/workflows/Dist_ridge/Dist_to_cell_types_density_heatmap.Rmd |
 | 7E | [Figure_7/Panel_E.R](Figure_7/Panel_E.R) | `Figure_7/Panel_E_values.csv` | 20 | imc/workflows/Dist_ridge/Dist_to_cell_types_density_heatmap.Rmd |

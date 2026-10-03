@@ -14,10 +14,10 @@ Preprint: Devakumar, V., Li, Y.-N., Filla, T. et al. **Single cell mapping of th
 
 Use R 4.4.1 and the package versions in [`figure_regeneration/environment.lock`](figure_regeneration/environment.lock). 
 
-Unzip `Source_data_repository_20261002.zip` into an external directory. Its SHA-256 is:
+Unzip `Source_data_repository_20261003_corrected.zip` into an external directory. Its SHA-256 is:
 
 ```text
-0b26712b2ce350852e102f751cc2a8206c41bd7cc415aa4b21467a59349ba7e6
+9dbe0e7d23f5ec2d2caa1c95c3331e24bfb6ec0dd813bd96ce3c0729079e4f52
 ```
 
 From the repository root, run:

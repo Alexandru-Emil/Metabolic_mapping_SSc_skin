@@ -1,6 +1,7 @@
 source("figure_regeneration/common/style.R")
 source("figure_regeneration/common/panel_registry.R")
 source("figure_regeneration/common/original_panel_adapters.R")
+source("figure_regeneration/common/methi_neighbor_violins.R")
 
 read_panel <- function(spec, data_dir) {
   path <- file.path(data_dir, spec$table)
@@ -213,11 +214,7 @@ make_panel <- function(d, spec) {
   }
   if (type == "projection") return(wrap_plots(lapply(split(d,d$cohort),function(a)point_plot(a,"UMAP1","UMAP2","plotted_group",unique(a$cohort),size=.2)),ncol=2))
   if (type == "box") return(box_panel(d,spec$x,spec$y,spec$facet,spec$title,spec$paired,spec$violin,spec$test,spec$adjustment))
-  if (type == "score_boxes") {
-    cols <- intersect(c("Glycolysis","TCA_OXPHOS"),names(d))
-    a <- do.call(rbind,lapply(cols,function(c)data.frame(donor=d$donor,group=d$disease,outcome=c,value=d[[c]])))
-    return(box_panel(a,"group","value","outcome",spec$title,test="wilcox"))
-  }
+  if (type == "methi_neighbor_violins") return(methi_neighbor_violins(d, spec$population))
   if (type == "radar") return(wrap_plots(radar_panel(d,"median_frequency_fraction","Frequency"),radar_panel(d,"median_standardized_frequency","Standardized frequency"),ncol=2))
   if (type == "gene_dot") return(gene_dot(d,spec))
   if (type == "sankey") return(sankey_panel(d))
