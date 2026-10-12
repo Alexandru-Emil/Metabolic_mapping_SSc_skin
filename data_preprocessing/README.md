@@ -27,9 +27,3 @@ The supplied `renv.lock` records the original IMC project's dependency specifica
 The historical Seahorse preparation workflow reads three EC source codes from `METABOLIC_EC_SOURCE_CODES`, as a comma-separated string in the original EC-line 1, 2, 3 order. The default is `EC1,EC2,EC3` for an aliased input workbook. Use a private environment value when working with the original workbook; source donor codes are not embedded in the public script. This changes input configuration only, preserving the original factor order and statistical design.
 
 The historical ResolVI input notebook reads its additional sample label from `METABOLIC_ADDITIONAL_XENIUM_SAMPLE`, defaulting to `AdditionalValidation1`. This additional sample is separate from the final six-donor deposited figure cohort. The excluded-validation QC workflows use descriptive variable names.
-
-## Recovered workflows with reference comparisons
-
-`imc/recovered_workflows` adds the first-cohort area/transform stage, CD68/CD3 gate merging, post-Xenium Histone gate merging, and historical purity/silhouette scoring and k selection. `functional/recovered_workflows` adds the numerical CX5 analysis of the normalized workbook. These parameterized stages were compared with separately saved project outputs; they do not replace the preserved legacy sources.
-
-See [verification/README.md](verification/README.md) for results, commands, cohort distinctions and unresolved manuscript-analysis gaps, and [RECOVERED_SOURCE_INDEX.md](RECOVERED_SOURCE_INDEX.md) for source fingerprints. Purity scoring is verified from saved clustering assignments; repeated-seed reclustering and the later macrophage k=100 selection are not certified by this addition.
