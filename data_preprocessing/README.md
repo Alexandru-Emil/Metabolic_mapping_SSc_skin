@@ -14,6 +14,8 @@ The source files preserve the project analyses and their alternative versions. T
 
 `workflows` contains the project-local sources. `additional_source_workflows` retains distinct scientific sources from the existing GitHub repository. `comparative_cohort_workflows` explicitly preserves seven-donor reanalyses for traceability. Hash prefixes distinguish source versions with the same original filename.
 
+The original six-donor training and final annotation are in [xenium/six_donor](xenium/six_donor/README.md); registered polygon and mask preparation is in [imc/registration](imc/registration/README.md).
+
 The main validation figure code is `shared/workflows/six_donor_imc_only_figure_panels.Rmd`. Its cohort is six donors. The figure-rendering layer uses the final deposited tables and never selects a seven-donor variant.
 
 Set `METABOLIC_INPUT_DIR` to an external directory containing the project-relative input hierarchy; set `METABOLIC_OUTPUT_DIR` for analysis outputs. Run from the repository root or set the R Markdown knitting root accordingly. Inputs such as Steinbock files, SpatialExperiment/Seurat objects, raw counts, matrisome definitions and model checkpoints are required by their individual workflows and are not substituted by the small figure tables.

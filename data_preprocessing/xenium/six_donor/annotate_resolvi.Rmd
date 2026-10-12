@@ -1,0 +1,319 @@
+---
+title: "Original six-donor Xenium annotation"
+output:
+  html_document:
+    code_folding: hide
+params:
+  input_h5ad: null
+  output_rds: null
+  allow_package_changes: false
+---
+
+Yi-Nan Li's final unsupervised-run report (25 February 2026, run 17922984), with the 10 August 2026 muscle-label revision. Inputs and outputs are parameters; the later semi-supervised annotation is separate.
+
+```{r annotation, message=FALSE}
+input_h5ad <- params$input_h5ad
+output_rds <- params$output_rds
+if (is.null(input_h5ad) || is.null(output_rds)) stop("Supply input_h5ad and output_rds parameters.")
+reference_versions <- c(Seurat = "5.4.0", SeuratObject = "5.3.0", anndataR = "1.0.1", dplyr = "1.2.0")
+if (!isTRUE(params$allow_package_changes)) {
+  for (package in names(reference_versions)) {
+    if (as.character(utils::packageVersion(package)) != reference_versions[[package]])
+      stop(sprintf("Use %s %s from the original R 4.5.2 environment.", package, reference_versions[[package]]))
+  }
+}
+ptm <- proc.time()
+tstamp <- format(Sys.time(), '%y%m%d%H%M%S')
+
+library(Seurat)
+library(anndataR)
+library(tidyverse)
+
+obj <- read_h5ad(input_h5ad, as = 'Seurat')
+
+if (!"SampleId" %in% colnames(obj[[]]) || anyNA(obj$SampleId) || length(unique(obj$SampleId)) != 6L)
+  stop("Annotation requires the original six donors.")
+if (!"X_resolvi" %in% Reductions(obj) || ncol(Embeddings(obj, "X_resolvi")) < 30L)
+  stop("Input requires the original 30-dimensional X_resolvi embedding.")
+if (!"scvi_norm_expr" %in% Layers(obj[["RNA"]])) stop("Input is missing scvi_norm_expr.")
+resolvi_count <- CreateAssayObject(data = log1p(obj[['RNA']]['scvi_norm_expr']*1000))
+obj[['resolvi']] <- resolvi_count
+
+obj[['RNA']]['scvi_norm_expr'] <- NULL
+rm(resolvi_count)
+gc()
+
+DimPlot(obj, reduction = 'X_umap')
+
+set.seed(1)
+obj <- FindNeighbors(obj, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30)
+
+DefaultAssay(obj) <- 'RNA'
+
+obj <- NormalizeData(obj, scale.factor = 1000)
+
+DimPlot(obj, reduction = 'umap', label = T) + theme_void()
+
+DotPlot(obj, c('COL1A1', 'LUM', 'PDGFRA', 'PDGFRB', 'RGS5', 'ACTA2', 'TAGLN', 'MYL9',
+               'PLIN1', 'ADIPOQ', 'MPZ','SCN7A', 'CD1C', 'CD2', 'COL17A1', 'KRT5', 'VWF', 'CD163', 'MUC1', 'CPA3', 'CD1A', 'CD207')) + RotatedAxis()
+
+DotPlot(obj, c('COL1A1', 'LUM', 'PDGFRA', 'FOXL1', 'PDGFRB', 'RGS5', 'NOTCH3', 'ACTA2', 'TAGLN', 'MYL9',
+               'PLIN1', 'MPZ','SCN7A', 'CD1C', 'CD207', 'CD2', 'MS4A1', 'COL17A1', 'KRT5', 'CDH1', 'DCT', 'MAGI1', 'KRT19', 'ERG', 'VWF', 'CD163', 'MUC1', 'GAL', 'CPA3', 'MS4A2')) + RotatedAxis()
+
+FeaturePlot(obj, c('COL1A1', 'MARCO', 'VWF', 'KRT5'), reduction = 'umap')
+
+FeaturePlot(obj, c('CD1A', 'CD207', 'MS4A1', 'RGS5'), reduction = 'umap', order = T)
+
+FeaturePlot(obj, c('MPZ', 'PLIN1', 'SCN7A', 'ADIPOQ'), reduction = 'umap', order = T)
+
+obj@meta.data$lv1_anno <- case_when(
+  obj$seurat_clusters %in% c(2:4,7,9:13, 15, 17) ~ 'epithelial',
+  obj$seurat_clusters %in% c(1,19) ~ 'fibroblast',
+  obj$seurat_clusters %in% c(5) ~ 'endothelial',
+  obj$seurat_clusters %in% c(6, 18, 20) ~ 'myeloid cell',
+  obj$seurat_clusters %in% c(8) ~ 'perivascular', # Schwan cell mix here
+  obj$seurat_clusters %in% c(14) ~ 'lymphocyte',
+  obj$seurat_clusters %in% c(16) ~ 'muscle',
+  .default = NA
+)
+if (anyNA(obj$lv1_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+
+
+tmp <- subset(obj, seurat_clusters == 8)
+set.seed(1)
+tmp <- FindNeighbors(tmp, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30)
+
+DefaultAssay(tmp) <- 'RNA'
+DimPlot(tmp, reduction = 'umap', label = T) + theme_void()
+
+FeaturePlot(tmp, c('RGS5', 'FOXL1', 'SCN7A', 'MPZ'), order = T, reduction = 'umap')
+
+DotPlot(tmp, c('RGS5', 'PDGFRB', 'SCN7A', 'MPZ', 'TAGLN', 'CD2', 'FOXL1', 'ADIPOQ', 'MYH9')) + RotatedAxis()
+
+tmp@meta.data$lv1_anno <- case_when(
+  tmp$seurat_clusters %in% c(1) ~ 'Schwann cell',
+  tmp$seurat_clusters %in% c(2:3) ~ 'pericyte',
+  tmp$seurat_clusters %in% c(4:5) ~ 'muscle', # August 2026 revision
+  .default = NA
+)
+if (anyNA(tmp$lv1_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+obj$lv1_anno[colnames(tmp)] <- as.character(tmp$lv1_anno)
+
+
+
+
+obj@meta.data$lv1_anno <- factor(obj$lv1_anno, levels = rev(c(
+  'epithelial', 'fibroblast', 'pericyte', 'endothelial',  'muscle', 'Schwann cell', 'myeloid cell', 'lymphocyte'
+)))
+
+lv1_pal <- scales::hue_pal()(nlevels(obj$lv1_anno))
+names(lv1_pal) <- levels(obj$lv1_anno)
+lv1_pal[c('epithelial', 'Schwann cell')] <- lv1_pal[c('Schwann cell', 'epithelial')]
+DimPlot(obj, reduction = 'umap', group.by = 'lv1_anno', label = FALSE, alpha = .5, cols = lv1_pal) + theme_void()
+
+
+DotPlot(obj,
+        c('KRT5', 'CDH1', 'COL1A1', 'PDGFRA', 'RGS5', 'PDGFRB', 'VWF', 'ENG', 'MYL9', 'DES', 'MPZ', 'SCN7A', 'MRC1', 'CD1C', 'CD2', 'MS4A1'),
+        group.by = 'lv1_anno', col.min = .4, col.max = 1.8, cols = c('#FFFFFF00', 'darkred')) +
+  scale_size_continuous(range = c(2, 6), limits = c(.1, 100)) +
+  RotatedAxis()
+
+fib <- subset(obj, lv1_anno=='fibroblast')
+
+
+fib <- FindNeighbors(fib, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30, resolution = 1.2)
+
+DefaultAssay(fib) <- 'RNA'
+# fib <- NormalizeData(fib, scale.factor = 1000)
+
+DimPlot(fib, reduction = 'umap', label = T) + theme_void()
+
+DotPlot(fib,
+        c('COL18A1', 'APCDD1', 'PI16', 'MFAP5', 'SFRP2', 'CXCL12', 'APOE', 'CCL19', 'CH25H', 'SPARC', 'COMP', 'IGFBP4', 'POSTN','ACTA2', 'ASPN', 'COL11A1', 'TNN', 'COCH', 'FGFBP2', 'IGFBP2', 'NGFR', 'SFRP1', 'COL8A1', 'SFRP4', 'SCN7A', 'EBF2')) +
+  RotatedAxis()
+
+# DefaultAssay(fib) <- 'resolvi'
+FeaturePlot(fib, c('SFRP4', 'COL8A1', 'PI16', 'APCDD1'), alpha = .5,
+            reduction = 'umap')
+
+DotPlot(fib, c('COL1A1', 'LUM', 'PDGFRA', 'PDGFRB', 'RGS5', 'NOTCH3', 'ACTA2', 'TAGLN', 'MYL9',
+               'PLIN1', 'MPZ', 'CD1C', 'CD207', 'CD2', 'COL17A1', 'KRT5', 'CDH1', 'DCT', 'MAGI1', 'KRT19', 'ERG', 'VWF', 'CD163', 'MUC1', 'GAL')) + RotatedAxis()
+
+FeaturePlot(fib, c('COL1A1', 'COL8A1', 'COMP', 'SFRP4'), reduction = 'umap', order = T, alpha = .5)
+
+FeaturePlot(fib, c('CCL19', 'CXCL12', 'NGFR', 'TNN'), reduction = 'umap', order = T, alpha = .5)
+
+FeaturePlot(fib, c('SCN7A', 'ASPN', 'COCH', 'COL11A1'), reduction = 'umap', order = T, alpha = .5)
+
+fib@meta.data$lv2_anno <- case_when(
+  fib$seurat_clusters %in% c(8) ~ 'CXCL12_Fib',
+  fib$seurat_clusters %in% c(5) ~ 'COMP_Fib',
+  fib$seurat_clusters %in% c(1) ~ 'COL8A1_Fib',
+  fib$seurat_clusters %in% c(2) ~ 'CCL19_Fib',
+  fib$seurat_clusters %in% c(3,7) ~ 'PI16_Fib', # 3 mixed with CXCL12
+  fib$seurat_clusters %in% c(4) ~ 'papillary_Fib',
+  fib$seurat_clusters %in% c(9) ~ 'COCH_Fib',
+  fib$seurat_clusters %in% c(6) ~ 'NGFR_Fib', # mix with CXCL12?
+  .default = NA
+)
+if (anyNA(fib$lv2_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+
+
+tmp <- subset(fib, seurat_clusters %in% c(3, 6))
+tmp <- FindNeighbors(tmp, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30)
+
+DefaultAssay(tmp) <- 'RNA'
+DimPlot(tmp, reduction = 'umap', label = T) + theme_void()
+
+FeaturePlot(tmp, c('CXCL12', 'CD34', 'PI16', 'NGFR'), order = T, reduction = 'umap')
+
+DotPlot(tmp, c('CXCL12', 'PPARG', 'CD34', 'PI16', 'MFAP5', 'NGFR', 'SFRP1')) + RotatedAxis()
+
+tmp@meta.data$lv2_anno <- case_when(
+  tmp$seurat_clusters %in% c(1) ~ 'PI16_Fib',
+  tmp$seurat_clusters %in% c(2) ~ 'NGFR_Fib',
+  tmp$seurat_clusters %in% c(3:4) ~ 'CXCL12_Fib',
+  .default = NA
+)
+if (anyNA(tmp$lv2_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+fib$lv2_anno[colnames(tmp)] <- as.character(tmp$lv2_anno)
+
+
+DimPlot(fib, reduction = 'umap', label = T, group.by = 'lv2_anno') + theme_void()
+
+fib@meta.data$lv2_anno <- factor(fib$lv2_anno, levels = rev(c(
+  'papillary_Fib', 'COMP_Fib', 'COL8A1_Fib', 'PI16_Fib', 'CXCL12_Fib', 'CCL19_Fib',  'NGFR_Fib', 'COCH_Fib'
+)))
+
+
+DotPlot(fib,
+        c('COL18A1', 'APCDD1', 'COMP', 'DPP4', 'COL8A1', 'SFRP4', 'PI16',
+          'MFAP5', 'CXCL12', 'APOE', 'CCL19', 'CH25H',
+          'NGFR', 'SCN7A',  'COCH', 'TNN'),
+        group.by = 'lv2_anno', col.min = .2, col.max = 1.8, cols = c('#FFFFFF00', 'darkred')) +
+  scale_size_continuous(range = c(2, 6), limits = c(.1, 100)) +
+  RotatedAxis()
+
+obj$lv2_anno <- NA
+obj$lv2_anno[colnames(fib)] <- as.character(fib$lv2_anno)
+obj[['umap_fib']] <- fib [['umap']]
+
+endo <- subset(obj, lv1_anno=='endothelial')
+
+
+endo <- FindNeighbors(endo, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30, resolution = 1)
+
+DefaultAssay(endo) <- 'RNA'
+# endo <- NormalizeData(endo, scale.factor = 1000)
+
+DimPlot(endo, reduction = 'umap', label = T) + theme_void()
+
+DotPlot(endo,
+        c('LYVE1', 'PROX1', 'PDPN','FLT4', 'TOP2A', 'MKI67', 'VWF', 'PECAM1', 'HEY1', 'GJA5', 'ACKR1', 'SELP', 'SELE', 'LRG1', 'TNFRSF4', 'CA4', 'CD36', 'ACTA2', 'CD34', 'KDR', 'CXCR4')) +
+  RotatedAxis()
+
+# DefaultAssay(fib) <- 'resolvi'
+FeaturePlot(endo, c('LYVE1', 'CD34', 'ACKR1', 'HEY1'), alpha = .5,
+            reduction = 'umap', order = T)
+
+DotPlot(endo, c('COL1A1', 'LUM', 'PDGFRA', 'PDGFRB', 'RGS5', 'NOTCH3', 'ACTA2', 'TAGLN', 'MYL9',
+               'PLIN1', 'MPZ', 'CD1C', 'CD207', 'CD2', 'COL17A1', 'KRT5', 'CDH1', 'DCT', 'MAGI1', 'KRT19', 'ERG', 'VWF', 'CD163', 'MUC1', 'GAL')) + RotatedAxis()
+
+FeaturePlot(endo, c('LYVE1', 'KDR', 'ACKR1', 'ACTA2'), alpha = .5,
+            reduction = 'umap', order = T)
+
+endo@meta.data$lv2_anno <- case_when(
+  endo$seurat_clusters %in% c(4) ~ 'cycling_EC',
+  endo$seurat_clusters %in% c(2,3) ~ 'ACKR1_EC',
+  endo$seurat_clusters %in% c(1) ~ 'EPC',
+  endo$seurat_clusters %in% c(5) ~ 'ACTA2_EC',
+  endo$seurat_clusters %in% c(6) ~ 'HEY1_EC',
+  endo$seurat_clusters %in% c(7) ~ 'lymphatic_EC',
+  .default = NA
+)
+if (anyNA(endo$lv2_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+
+tmp <- subset(endo, seurat_clusters %in% c(1, 3, 5))
+tmp <- FindNeighbors(tmp, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30, resolution = 2)
+
+# DefaultAssay(tmp) <- 'RNA'
+DimPlot(tmp, reduction = 'umap', label = T) + theme_void()
+
+FeaturePlot(tmp, c('ACKR1', 'KDR', 'ACTA2', 'LYVE1'), order = T, reduction = 'umap')
+
+DotPlot(tmp, c('ACKR1', 'SELP', 'ACTA2', 'CD34', 'KDR', 'LYVE1', 'PDPN', 'FLT3')) + RotatedAxis()
+
+tmp@meta.data$lv2_anno <- case_when(
+  tmp$seurat_clusters %in% c(1,2, 4) ~ 'ACKR1_EC',
+  tmp$seurat_clusters %in% c(6,10) ~ 'ACTA2_EC',
+  tmp$seurat_clusters %in% c(3,5, 7:9) ~ 'EPC',
+  .default = NA
+)
+if (anyNA(tmp$lv2_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+endo$lv2_anno[colnames(tmp)] <- as.character(tmp$lv2_anno)
+
+
+
+tmp <- subset(endo, lv2_anno %in% c('EPC', 'lymphatic_EC', 'HEY1_EC'))
+tmp <- FindNeighbors(tmp, reduction = 'X_resolvi', dims = 1:30) %>%
+  RunUMAP(reduction = 'X_resolvi', dims = 1:30) %>%
+  FindClusters(algorithm = 4, dims = 1:30, resolution = 2)
+
+# DefaultAssay(tmp) <- 'RNA'
+DimPlot(tmp, reduction = 'umap', label = T) + theme_void()
+
+FeaturePlot(tmp, c('PDPN', 'KDR', 'HEY1', 'LYVE1'), order = T, reduction = 'umap')
+
+DotPlot(tmp, c('VWF', 'GJA5', 'HEY1', 'CD34', 'KDR', 'LYVE1', 'PDPN', 'ACKR1')) + RotatedAxis()
+
+tmp@meta.data$lv2_anno <- case_when(
+  tmp$seurat_clusters %in% c(1) ~ 'lymphatic_EC',
+  tmp$seurat_clusters %in% c(4) ~ 'HEY1_EC',
+  tmp$seurat_clusters %in% c(2,3, 10) ~ 'ACKR1_EC',
+  tmp$seurat_clusters %in% c(5:9) ~ 'EPC',
+  .default = NA
+)
+if (anyNA(tmp$lv2_anno)) stop("Unexpected cluster IDs: verify the reference environment and original model input.")
+endo$lv2_anno[colnames(tmp)] <- as.character(tmp$lv2_anno)
+
+
+
+DimPlot(endo, reduction = 'umap', label = T, group.by = 'lv2_anno') + theme_void()
+
+endo@meta.data$lv2_anno <- factor(endo$lv2_anno, levels = rev(c(
+  'cycling_EC', 'ACKR1_EC', 'EPC', 'ACTA2_EC', 'HEY1_EC', 'lymphatic_EC'
+)))
+
+
+DotPlot(endo,
+        c('MKI67', 'TOP2A', 'ACKR1', 'SELP', 'KDR', 'APLNR', 'CD34',  'ACTA2', 'HEY1', 'GJA5', 'LYVE1', 'PDPN'),
+        group.by = 'lv2_anno', col.min = .1, col.max = .8, cols = c('#FFFFFF00', 'darkred')) +
+  scale_size_continuous(range = c(2, 6), limits = c(.1, 100)) +
+  RotatedAxis()
+
+obj$lv2_anno[colnames(endo)] <- as.character(endo$lv2_anno)
+obj[['umap_endo']] <- endo [['umap']]
+
+DimPlot(obj, reduction = 'X_umap', group.by = 'lv2_anno',
+        alpha = .3, label.size = 2) + theme_void()
+
+dir.create(dirname(output_rds), recursive = TRUE, showWarnings = FALSE)
+saveRDS(obj, output_rds)
+
+etm <- proc.time() - ptm
+cat('This analysis took :', etm[3], 's \n')
+
+sessioninfo::session_info()
+```

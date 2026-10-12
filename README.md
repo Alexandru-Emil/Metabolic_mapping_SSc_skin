@@ -2,7 +2,7 @@
 
 Analysis code for **Single cell mapping of the metabolic landscape of skin fibrosis in systemic sclerosis**, by Devakumar, Li, Filla, Rius Rigau, Györfi, Zhi, Zhu, Qi, Tümerdem, Neelagar, Wang, Liang, Bergmann, Schett, Distler and Matei.
 
-Archived code version 1.0.3: [10.5281/zenodo.23121966](https://doi.org/10.5281/zenodo.23121966) ([all versions](https://doi.org/10.5281/zenodo.23107218)). Figure source data: [10.5281/zenodo.23121925](https://doi.org/10.5281/zenodo.23121925). Bulk RNA-seq counts and sample metadata: [10.5281/zenodo.23118953](https://doi.org/10.5281/zenodo.23118953).
+Code archive: [10.5281/zenodo.23107218](https://doi.org/10.5281/zenodo.23107218) (all versions). Figure source data: [10.5281/zenodo.23121925](https://doi.org/10.5281/zenodo.23121925). Bulk RNA-seq counts and sample metadata: [10.5281/zenodo.23118953](https://doi.org/10.5281/zenodo.23118953).
 Preprint: Devakumar, V., Li, Y.-N., Filla, T. et al. **Single cell mapping of the metabolic landscape of skin fibrosis in systemic sclerosis.** *bioRxiv* (2025). [10.1101/2025.04.14.648761](https://doi.org/10.1101/2025.04.14.648761).
 
 ## Organization

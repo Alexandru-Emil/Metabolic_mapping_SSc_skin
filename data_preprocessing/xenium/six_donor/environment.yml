@@ -1,0 +1,12 @@
+name: metabolic-resolvi-six-donor
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.3
+  - pip
+  - pip:
+      - scvi-tools==1.4.1
+      - torch==2.4.1
+      - scanpy==1.11.5
+      - anndata
+      - session-info
