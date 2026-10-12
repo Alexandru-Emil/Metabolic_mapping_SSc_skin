@@ -1,0 +1,13 @@
+{
+  "first_import": "/private/inputs/first_import.rds",
+  "immune_before": "/private/inputs/immune_before.RData",
+  "immune_after": "/private/inputs/immune_after.rds",
+  "immune_gates": "/private/inputs/immune_gates",
+  "histone_before": "/private/inputs/histone_before.rds",
+  "histone_after": "/private/inputs/histone_after.rds",
+  "histone_gates": "/private/inputs/histone_gates",
+  "purity_workspace": "/private/inputs/purity_workspace.RData",
+  "purity_workbook": "/private/inputs/purity_workbook.xlsx",
+  "purity_final": "/private/inputs/purity_final.RData",
+  "cx5_workbook": "/private/inputs/cx5_workbook.xlsx"
+}
